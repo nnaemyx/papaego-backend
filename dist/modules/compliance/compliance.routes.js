@@ -1,0 +1,13 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const compliance_controller_1 = require("./compliance.controller");
+const rbac_middleware_1 = require("../../middlewares/rbac.middleware");
+const auth_middleware_1 = require("../../middlewares/auth.middleware");
+const router = (0, express_1.Router)();
+router.use(auth_middleware_1.auth);
+router.use((0, rbac_middleware_1.requireRole)("COMPLIANCE", "ADMIN"));
+router.get("/flags", compliance_controller_1.getComplianceFlags);
+router.get("/reports", compliance_controller_1.getReports);
+router.post("/reports", compliance_controller_1.createComplianceReport);
+exports.default = router;

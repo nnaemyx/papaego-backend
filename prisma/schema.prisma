@@ -1,0 +1,169 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- ENUMS ----------
+
+enum Role {
+  AGENT
+  CUSTOMER
+  COMPLIANCE
+  ADMIN
+}
+
+enum TradeStatus {
+  INITIATED
+  CUSTOMER_VERIFIED
+  QUOTED
+  SENT_TO_CUSTOMER
+  CUSTOMER_CONFIRMED
+  AWAITING_PAYMENT
+  PAYMENT_CONFIRMED
+  FLAGGED
+  UNDER_REVIEW
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ReportType {
+  CTR
+  STR
+}
+
+// ---------- CORE ----------
+
+model User {
+  id        String   @id @default(uuid())
+  role      Role
+  email     String?
+  phone     String
+  password  String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  agentProfile AgentProfile?
+  customer     Customer?
+}
+
+model Country {
+  id       String @id @default(uuid())
+  name     String
+  isoCode  String
+  currency String
+
+  agentProfiles AgentProfile[]
+}
+
+// ---------- AGENTS ----------
+
+model AgentProfile {
+  userId    String @id
+  countryId String
+  lga       String
+  licenseId String
+  dailyLimit Decimal
+  monthlyLimit Decimal
+
+  user    User    @relation(fields: [userId], references: [id])
+  country Country @relation(fields: [countryId], references: [id])
+}
+
+// ---------- CUSTOMERS ----------
+
+model Customer {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  bvn         String
+  fullName    String
+  bankName    String?
+  accountNo   String?
+  email       String?
+  phone       String?
+  verified    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+// ---------- TRADES ----------
+
+model Trade {
+  id             String @id @default(uuid())
+  agentId        String
+  customerId     String
+  countryId      String
+
+  sendCurrency   String
+  receiveCurrency String
+  amount         Decimal
+  fxRate         Decimal?
+  lockedUntil    DateTime?
+
+  status         TradeStatus
+  createdAt      DateTime @default(now())
+}
+
+// ---------- COMPLIANCE ----------
+
+model ComplianceFlag {
+  id        String @id @default(uuid())
+  tradeId   String
+  reason    String
+  severity  String
+  createdAt DateTime @default(now())
+}
+
+model ComplianceReport {
+  id        String @id @default(uuid())
+  tradeId   String
+  type      ReportType
+  data      Json
+  createdAt DateTime @default(now())
+}
+
+// ---------- APPROVALS ----------
+
+model OverrideApproval {
+  id          String @id @default(uuid())
+  tradeId     String
+  requestedBy String
+  approvedBy  String?
+  status      ApprovalStatus @default(PENDING)
+}
+
+// ---------- AUDIT ----------
+
+model AuditLog {
+  id        String @id @default(uuid())
+  actorId  String
+  role     Role
+  action   String
+  entity   String
+  entityId String
+  ip       String
+  createdAt DateTime @default(now())
+}
+
+model FxMargin {
+  id        String   @id @default(uuid())
+  countryId String   @unique
+  margin    Decimal
+}
+
+model SystemConfig {
+  key   String @id
+  value Json
+}
+
