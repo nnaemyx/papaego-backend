@@ -8,7 +8,11 @@ const trade_routes_1 = __importDefault(require("./trades/trade.routes"));
 const webhook_routes_1 = __importDefault(require("./webhooks/webhook.routes"));
 const customer_routes_1 = __importDefault(require("./customers/customer.routes"));
 const agent_routes_1 = __importDefault(require("./agents/agent.routes"));
+const agent_onboarding_routes_1 = __importDefault(require("./agents/agent.onboarding.routes"));
 const admin_routes_1 = __importDefault(require("./admin/admin.routes"));
+const customer_routes_2 = __importDefault(require("./customer/customer.routes"));
+const commission_routes_1 = __importDefault(require("./commission/commission.routes"));
+const audit_routes_1 = __importDefault(require("./audit/audit.routes"));
 const auth_routes_1 = __importDefault(require("./auth/auth.routes"));
 const compliance_routes_1 = __importDefault(require("./compliance/compliance.routes"));
 const router = (0, express_1.Router)();
@@ -16,7 +20,11 @@ router.use("/auth", auth_routes_1.default);
 router.use("/trades", trade_routes_1.default); // Keeping original trade routes for now, though logic might be moving to specific role routes
 router.use("/webhooks", webhook_routes_1.default);
 router.use("/customer", customer_routes_1.default);
+router.use("/agent/onboarding", agent_onboarding_routes_1.default); // Public onboarding routes (no auth)
 router.use("/agent", agent_routes_1.default);
 router.use("/admin", admin_routes_1.default);
+router.use("/admin/customers", customer_routes_2.default);
+router.use("/admin/commissions", commission_routes_1.default);
+router.use("/admin/audit-logs", audit_routes_1.default);
 router.use("/compliance", compliance_routes_1.default);
 exports.default = router;

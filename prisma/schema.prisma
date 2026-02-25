@@ -42,19 +42,35 @@ enum ReportType {
   STR
 }
 
+enum CommissionType {
+  TRANSACTION
+  REFERRAL
+  BONUS
+}
+
+enum CommissionStatus {
+  PENDING
+  PAID
+  DISPUTED
+}
+
 // ---------- CORE ----------
 
 model User {
   id        String   @id @default(uuid())
   role      Role
-  email     String?
+  email     String?  @unique
   phone     String
   password  String
+  firstName  String?
+  lastName   String?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
   agentProfile AgentProfile?
   customer     Customer?
+  commissions  Commission[] @relation("AgentCommissions")
+  agentNotes   CustomerNote[] @relation("AgentNotes")
 }
 
 model Country {
@@ -62,22 +78,26 @@ model Country {
   name     String
   isoCode  String
   currency String
-
-  agentProfiles AgentProfile[]
 }
 
 // ---------- AGENTS ----------
 
 model AgentProfile {
   userId    String @id
-  countryId String
+  region    String
   lga       String
   licenseId String
   dailyLimit Decimal
   monthlyLimit Decimal
+  homeAddress  String?
+  dateOfBirth  DateTime?
+  governmentIdUrl String?
+  proofOfAddressUrl String?
+  onboardingStatus String @default("PENDING") // PENDING, IN_PROGRESS, SUBMITTED, APPROVED
+  onboardingToken String? @unique
+  onboardingTokenExpiry DateTime?
 
   user    User    @relation(fields: [userId], references: [id])
-  country Country @relation(fields: [countryId], references: [id])
 }
 
 // ---------- CUSTOMERS ----------
@@ -94,7 +114,8 @@ model Customer {
   verified    Boolean  @default(false)
   createdAt   DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id])
+  user         User @relation(fields: [userId], references: [id])
+  notes        CustomerNote[]
 }
 
 // ---------- TRADES ----------
@@ -113,6 +134,8 @@ model Trade {
 
   status         TradeStatus
   createdAt      DateTime @default(now())
+  
+  commissions    Commission[]
 }
 
 // ---------- COMPLIANCE ----------
@@ -165,5 +188,53 @@ model FxMargin {
 model SystemConfig {
   key   String @id
   value Json
+}
+
+// ---------- COMMISSIONS ----------
+
+model Commission {
+  id               String   @id @default(uuid())
+  reference        String   @unique
+  agentId          String
+  tradeId          String
+  type             CommissionType
+  amount           Decimal
+  currency         String   @default("NGN")
+  rate             Decimal?
+  status           CommissionStatus @default(PENDING)
+  paidAt           DateTime?
+  payoutMethod     String?
+  bankName         String?
+  accountName      String?
+  accountNumber    String?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  agent            User     @relation("AgentCommissions", fields: [agentId], references: [id])
+  trade            Trade    @relation(fields: [tradeId], references: [id])
+  activities       CommissionActivity[]
+}
+
+model CommissionActivity {
+  id             String     @id @default(uuid())
+  commissionId   String
+  action         String
+  actorId        String?
+  description    String
+  createdAt      DateTime   @default(now())
+
+  commission     Commission @relation(fields: [commissionId], references: [id])
+}
+
+model CustomerNote {
+  id           String   @id @default(uuid())
+  customerId   String
+  agentId      String
+  content      String
+  createdAt    DateTime @default(now())
+
+  customer     Customer @relation(fields: [customerId], references: [id])
+  agent        User     @relation("AgentNotes", fields: [agentId], references: [id])
 }
 

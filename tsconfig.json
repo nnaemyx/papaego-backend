@@ -5,7 +5,13 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "skipLibCheck": true
   },
-  "exclude": ["node_modules", "prisma.config.ts"]
+  "exclude": [
+    "node_modules",
+    "prisma.config.ts",
+    "prisma/seed.ts",
+    "test-db.ts"
+  ]
 }
