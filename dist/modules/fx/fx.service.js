@@ -6,7 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getLockedRate = getLockedRate;
 const fx_provider_1 = require("./fx.provider");
 const db_1 = __importDefault(require("../../config/db"));
-const fx = new fx_provider_1.MockFxProvider();
+const fx = new fx_provider_1.RealFxProvider();
 async function getLockedRate(base, quote, country) {
     const rawRate = await fx.getRate(base, quote, country);
     // Fetch margin configuration

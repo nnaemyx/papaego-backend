@@ -1,7 +1,7 @@
-import { MockFxProvider } from "./fx.provider";
+import { RealFxProvider } from "./fx.provider";
 import prisma from "../../config/db";
 
-const fx = new MockFxProvider();
+const fx = new RealFxProvider();
 
 export async function getLockedRate(
     base: string,

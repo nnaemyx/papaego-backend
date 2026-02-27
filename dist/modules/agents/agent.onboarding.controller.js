@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.verifyOnboardingToken = verifyOnboardingToken;
 exports.completeOnboarding = completeOnboarding;
+exports.uploadOnboardingDocument = uploadOnboardingDocument;
 const db_1 = __importDefault(require("../../config/db"));
 const bcrypt_1 = __importDefault(require("bcrypt"));
 /**
@@ -54,7 +55,7 @@ async function verifyOnboardingToken(req, res) {
  */
 async function completeOnboarding(req, res) {
     try {
-        const { token, firstName, lastName, password, dateOfBirth, homeAddress, governmentIdUrl, proofOfAddressUrl } = req.body;
+        const { token, firstName, lastName, phone, password, dateOfBirth, homeAddress, governmentIdUrl, proofOfAddressUrl } = req.body;
         // Validate required fields
         if (!token) {
             return res.status(400).json({ error: "Token is required" });
@@ -91,7 +92,9 @@ async function completeOnboarding(req, res) {
             data: {
                 firstName,
                 lastName,
-                password: hashedPassword
+                phone: phone || agentProfile.user.phone,
+                password: hashedPassword,
+                isActive: false
             }
         });
         await db_1.default.agentProfile.update({
@@ -114,5 +117,23 @@ async function completeOnboarding(req, res) {
     catch (error) {
         console.error("Error completing onboarding:", error);
         res.status(500).json({ error: "Failed to complete onboarding" });
+    }
+}
+/**
+ * Upload onboarding document (NIN / Proof of Address)
+ */
+async function uploadOnboardingDocument(req, res) {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: "No file uploaded" });
+        }
+        // Return the path prefix that matches the static folder config in app.ts
+        const fileUrl = `/uploads/${req.file.filename}`;
+        // Let the frontend complete the onboarding by pushing this URL string
+        res.json({ url: fileUrl });
+    }
+    catch (error) {
+        console.error("Error uploading document:", error);
+        res.status(500).json({ error: "Failed to upload document" });
     }
 }

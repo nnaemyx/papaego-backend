@@ -2,7 +2,11 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { generateLicenseId } from "../../utils/generateLicenseId";
 import { generateOnboardingToken, getOnboardingTokenExpiry } from "../../utils/generateOnboardingToken";
-import { sendAgentInvitation } from "../../services/email.service";
+import {
+    sendAgentInvitation,
+    sendAgentVerificationEmail,
+    sendAgentSuspensionEmail
+} from "../../services/email.service";
 
 export async function createAgent(req: Request, res: Response) {
     const { email, phone, region, firstName, lastName } = req.body;
@@ -133,16 +137,38 @@ export async function getAgents(req: Request, res: Response) {
 }
 
 export async function activateAgent(req: Request, res: Response) {
-    await prisma.user.update({
+    const user = await prisma.user.update({
         where: { id: req.params.id },
-        data: { isActive: true }
+        data: { isActive: true },
+        include: { agentProfile: true }
     });
+
+    if (user.agentProfile) {
+        await prisma.agentProfile.update({
+            where: { userId: user.id },
+            data: { onboardingStatus: "APPROVED" }
+        });
+    }
+
+    if (user.email) {
+        const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+        const loginLink = `${frontendUrl}/agent/login`;
+        try {
+            await sendAgentVerificationEmail({
+                email: user.email,
+                agentName: user.firstName || user.email.split('@')[0],
+                loginLink
+            });
+        } catch (error) {
+            console.error("Failed to send verification email to:", user.email);
+        }
+    }
 
     res.json({ success: true });
 }
 
 export async function suspendAgent(req: Request, res: Response) {
-    await prisma.user.update({
+    const user = await prisma.user.update({
         where: { id: req.params.id },
         data: { isActive: false }
     });
@@ -158,7 +184,33 @@ export async function suspendAgent(req: Request, res: Response) {
         }
     });
 
+    if (user.email) {
+        try {
+            await sendAgentSuspensionEmail({
+                email: user.email,
+                agentName: user.firstName || user.email.split('@')[0],
+            });
+        } catch (error) {
+            console.error("Failed to send suspension email to:", user.email);
+        }
+    }
+
     res.json({ suspended: true });
+}
+
+export async function getFxMargin(req: Request, res: Response) {
+    try {
+        const countryId = (req.query.countryId as string) || "NGA";
+
+        const margin = await prisma.fxMargin.findUnique({
+            where: { countryId }
+        });
+
+        res.json({ countryId, margin: margin?.margin || 0 });
+    } catch (error) {
+        console.error("Error fetching fx margin:", error);
+        res.status(500).json({ error: "Failed to fetch FX margin" });
+    }
 }
 
 export async function setFxMargin(req: Request, res: Response) {
@@ -334,7 +386,22 @@ export async function getAdminTransaction(req: Request, res: Response) {
             return res.status(404).json({ error: "Transaction not found" });
         }
 
-        res.json(trade);
+        // Fetch Agent Info
+        const agent = await prisma.user.findUnique({
+            where: { id: trade.agentId },
+            select: { id: true, firstName: true, lastName: true, email: true, phone: true }
+        });
+
+        // Fetch Customer Info
+        const customer = await prisma.customer.findUnique({
+            where: { id: trade.customerId }
+        });
+
+        res.json({
+            ...trade,
+            agent,
+            customer
+        });
     } catch (error) {
         console.error("Error fetching transaction:", error);
         res.status(500).json({ error: "Failed to fetch transaction" });
@@ -413,16 +480,71 @@ export async function deleteAgent(req: Request, res: Response) {
             return res.status(404).json({ error: "Agent not found" });
         }
 
-        // Delete agent profile first (due to foreign key constraint)
-        if (user.agentProfile) {
-            await prisma.agentProfile.delete({
+        // Use a transaction to ensure all related data is deleted correctly
+        await prisma.$transaction(async (tx) => {
+            // 1. Delete Commission activities and commissions
+            const tradeIds = await tx.trade.findMany({
+                where: { agentId: id },
+                select: { id: true }
+            }).then(trades => trades.map(t => t.id));
+
+            await tx.commissionActivity.deleteMany({
+                where: { commission: { agentId: id } }
+            });
+
+            await tx.commission.deleteMany({
+                where: { agentId: id }
+            });
+
+            // 2. Delete Notifications
+            await tx.notification.deleteMany({
                 where: { userId: id }
             });
-        }
 
-        // Delete user
-        await prisma.user.delete({
-            where: { id }
+            // 3. Delete Agent Documents and Notes (where the user is the agent)
+            await tx.customerDocument.deleteMany({
+                where: { agentId: id }
+            });
+
+            await tx.customerNote.deleteMany({
+                where: { agentId: id }
+            });
+
+            // 4. Delete Agent Profile if exists
+            if (user.agentProfile) {
+                await tx.agentProfile.delete({
+                    where: { userId: id }
+                });
+            }
+
+            // 5. Delete Customer profile if exists (causes the reported error)
+            await tx.customer.deleteMany({
+                where: { userId: id }
+            });
+
+            // 6. Handle Trades - In a real system we might not delete trades, 
+            // but since Trade.agentId is non-nullable, we must delete them or reassign.
+            // Before deleting trades, delete their dependents:
+            await tx.complianceFlag.deleteMany({
+                where: { tradeId: { in: tradeIds } }
+            });
+
+            await tx.complianceReport.deleteMany({
+                where: { tradeId: { in: tradeIds } }
+            });
+
+            await tx.overrideApproval.deleteMany({
+                where: { tradeId: { in: tradeIds } }
+            });
+
+            await tx.trade.deleteMany({
+                where: { agentId: id }
+            });
+
+            // 7. Finally delete the user
+            await tx.user.delete({
+                where: { id }
+            });
         });
 
         // Create audit log
@@ -604,5 +726,53 @@ export async function exportAgents(req: Request, res: Response) {
     } catch (error) {
         console.error("Error exporting agents:", error);
         res.status(500).json({ error: "Failed to export agents" });
+    }
+}
+
+// Delete a transaction (Hard Delete)
+export async function deleteTransaction(req: Request, res: Response) {
+    try {
+        const { id } = req.params;
+
+        const trade = await prisma.trade.findUnique({
+            where: { id }
+        });
+
+        if (!trade) {
+            return res.status(404).json({ error: "Transaction not found" });
+        }
+
+        // Delete associated records first (e.g. Commissions or ComplianceFlags)
+        // Prisma will handle cascades if configured, but manually deleting related records ensures safety
+
+        await prisma.complianceFlag.deleteMany({
+            where: { tradeId: id }
+        });
+
+        await prisma.commission.deleteMany({
+            where: { tradeId: id }
+        });
+
+        // Finally, delete the trade itself
+        await prisma.trade.delete({
+            where: { id }
+        });
+
+        // Log the deletion
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: 'ADMIN',
+                action: 'TRANSACTION_DELETED',
+                entity: 'Trade',
+                entityId: id,
+                ip: req.ip || '127.0.0.1'
+            }
+        });
+
+        res.json({ success: true, message: "Transaction deleted successfully" });
+    } catch (error) {
+        console.error("Error deleting transaction:", error);
+        res.status(500).json({ error: "Failed to delete transaction" });
     }
 }

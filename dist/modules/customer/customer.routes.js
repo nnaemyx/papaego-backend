@@ -14,4 +14,5 @@ router.get("/export", customer_controller_1.exportCustomers);
 router.get("/:id", customer_controller_1.getCustomer);
 router.get("/:id/transactions", customer_controller_1.getCustomerTransactions);
 router.post("/:id/notes", customer_controller_1.addCustomerNote);
+router.patch("/:id/approve", customer_controller_1.approveCustomer);
 exports.default = router;

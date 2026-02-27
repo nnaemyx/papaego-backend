@@ -24,7 +24,9 @@ router.get("/dashboard/stats", admin_controller_1.getDashboardStats);
 // Transactions
 router.get("/transactions", admin_controller_1.listAllTrades);
 router.get("/transactions/:id", admin_controller_1.getAdminTransaction);
+router.delete("/transactions/:id", admin_controller_1.deleteTransaction);
 // Other
+router.get("/fx-margins", admin_controller_1.getFxMargin);
 router.post("/fx-margins", admin_controller_1.setFxMargin);
 router.post("/overrides/:id/approve", admin_controller_1.approveOverride);
 exports.default = router;

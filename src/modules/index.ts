@@ -10,6 +10,8 @@ import adminCommissionRoutes from "./commission/commission.routes";
 import adminAuditRoutes from "./audit/audit.routes";
 import authRoutes from "./auth/auth.routes";
 import complianceRoutes from "./compliance/compliance.routes";
+import notificationRoutes from "./notifications/notification.routes";
+import fxRoutes from "./fx/fx.routes";
 
 const router = Router();
 
@@ -24,5 +26,7 @@ router.use("/admin/customers", adminCustomerRoutes);
 router.use("/admin/commissions", adminCommissionRoutes);
 router.use("/admin/audit-logs", adminAuditRoutes);
 router.use("/compliance", complianceRoutes);
+router.use("/notifications", notificationRoutes);
+router.use("/fx", fxRoutes);
 
 export default router;

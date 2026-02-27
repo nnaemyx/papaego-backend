@@ -1,9 +1,26 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MockFxProvider = void 0;
-class MockFxProvider {
+exports.RealFxProvider = void 0;
+class RealFxProvider {
     async getRate(base, quote, country) {
-        return 1500.25; // example
+        try {
+            // Using open.er-api.com which provides free, daily updated exchange rates
+            const response = await fetch(`https://open.er-api.com/v6/latest/${base.toUpperCase()}`);
+            if (!response.ok) {
+                throw new Error("Failed to fetch exchange rates");
+            }
+            const data = await response.json();
+            const rate = data.rates[quote.toUpperCase()];
+            if (!rate) {
+                throw new Error(`Rate not found for quote currency: ${quote}`);
+            }
+            return rate;
+        }
+        catch (error) {
+            console.error("FX Provider Error:", error);
+            // Fallback to a hardcoded rate just in case the API is down, so the app doesn't crash completely
+            return 1500;
+        }
     }
 }
-exports.MockFxProvider = MockFxProvider;
+exports.RealFxProvider = RealFxProvider;

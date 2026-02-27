@@ -15,6 +15,8 @@ const commission_routes_1 = __importDefault(require("./commission/commission.rou
 const audit_routes_1 = __importDefault(require("./audit/audit.routes"));
 const auth_routes_1 = __importDefault(require("./auth/auth.routes"));
 const compliance_routes_1 = __importDefault(require("./compliance/compliance.routes"));
+const notification_routes_1 = __importDefault(require("./notifications/notification.routes"));
+const fx_routes_1 = __importDefault(require("./fx/fx.routes"));
 const router = (0, express_1.Router)();
 router.use("/auth", auth_routes_1.default);
 router.use("/trades", trade_routes_1.default); // Keeping original trade routes for now, though logic might be moving to specific role routes
@@ -27,4 +29,6 @@ router.use("/admin/customers", customer_routes_2.default);
 router.use("/admin/commissions", commission_routes_1.default);
 router.use("/admin/audit-logs", audit_routes_1.default);
 router.use("/compliance", compliance_routes_1.default);
+router.use("/notifications", notification_routes_1.default);
+router.use("/fx", fx_routes_1.default);
 exports.default = router;

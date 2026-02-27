@@ -7,7 +7,8 @@ import {
     getCustomerStats,
     addCustomerNote,
     getCustomerTransactions,
-    exportCustomers
+    exportCustomers,
+    approveCustomer
 } from "./customer.controller";
 
 const router = Router();
@@ -22,5 +23,6 @@ router.get("/export", exportCustomers);
 router.get("/:id", getCustomer);
 router.get("/:id/transactions", getCustomerTransactions);
 router.post("/:id/notes", addCustomerNote);
+router.patch("/:id/approve", approveCustomer);
 
 export default router;

@@ -7,6 +7,7 @@ exports.createAgent = createAgent;
 exports.getAgents = getAgents;
 exports.activateAgent = activateAgent;
 exports.suspendAgent = suspendAgent;
+exports.getFxMargin = getFxMargin;
 exports.setFxMargin = setFxMargin;
 exports.listAllTrades = listAllTrades;
 exports.approveOverride = approveOverride;
@@ -19,6 +20,7 @@ exports.updateAgentVerification = updateAgentVerification;
 exports.getAgentActivities = getAgentActivities;
 exports.getAgentTransactions = getAgentTransactions;
 exports.exportAgents = exportAgents;
+exports.deleteTransaction = deleteTransaction;
 const db_1 = __importDefault(require("../../config/db"));
 const generateLicenseId_1 = require("../../utils/generateLicenseId");
 const generateOnboardingToken_1 = require("../../utils/generateOnboardingToken");
@@ -140,14 +142,35 @@ async function getAgents(req, res) {
     res.json(agents);
 }
 async function activateAgent(req, res) {
-    await db_1.default.user.update({
+    const user = await db_1.default.user.update({
         where: { id: req.params.id },
-        data: { isActive: true }
+        data: { isActive: true },
+        include: { agentProfile: true }
     });
+    if (user.agentProfile) {
+        await db_1.default.agentProfile.update({
+            where: { userId: user.id },
+            data: { onboardingStatus: "APPROVED" }
+        });
+    }
+    if (user.email) {
+        const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+        const loginLink = `${frontendUrl}/agent/login`;
+        try {
+            await (0, email_service_1.sendAgentVerificationEmail)({
+                email: user.email,
+                agentName: user.firstName || user.email.split('@')[0],
+                loginLink
+            });
+        }
+        catch (error) {
+            console.error("Failed to send verification email to:", user.email);
+        }
+    }
     res.json({ success: true });
 }
 async function suspendAgent(req, res) {
-    await db_1.default.user.update({
+    const user = await db_1.default.user.update({
         where: { id: req.params.id },
         data: { isActive: false }
     });
@@ -161,7 +184,31 @@ async function suspendAgent(req, res) {
             ip: req.ip || "127.0.0.1"
         }
     });
+    if (user.email) {
+        try {
+            await (0, email_service_1.sendAgentSuspensionEmail)({
+                email: user.email,
+                agentName: user.firstName || user.email.split('@')[0],
+            });
+        }
+        catch (error) {
+            console.error("Failed to send suspension email to:", user.email);
+        }
+    }
     res.json({ suspended: true });
+}
+async function getFxMargin(req, res) {
+    try {
+        const countryId = req.query.countryId || "NGA";
+        const margin = await db_1.default.fxMargin.findUnique({
+            where: { countryId }
+        });
+        res.json({ countryId, margin: margin?.margin || 0 });
+    }
+    catch (error) {
+        console.error("Error fetching fx margin:", error);
+        res.status(500).json({ error: "Failed to fetch FX margin" });
+    }
 }
 async function setFxMargin(req, res) {
     const { countryId, margin } = req.body;
@@ -312,7 +359,20 @@ async function getAdminTransaction(req, res) {
         if (!trade) {
             return res.status(404).json({ error: "Transaction not found" });
         }
-        res.json(trade);
+        // Fetch Agent Info
+        const agent = await db_1.default.user.findUnique({
+            where: { id: trade.agentId },
+            select: { id: true, firstName: true, lastName: true, email: true, phone: true }
+        });
+        // Fetch Customer Info
+        const customer = await db_1.default.customer.findUnique({
+            where: { id: trade.customerId }
+        });
+        res.json({
+            ...trade,
+            agent,
+            customer
+        });
     }
     catch (error) {
         console.error("Error fetching transaction:", error);
@@ -380,15 +440,59 @@ async function deleteAgent(req, res) {
         if (!user || user.role !== 'AGENT') {
             return res.status(404).json({ error: "Agent not found" });
         }
-        // Delete agent profile first (due to foreign key constraint)
-        if (user.agentProfile) {
-            await db_1.default.agentProfile.delete({
+        // Use a transaction to ensure all related data is deleted correctly
+        await db_1.default.$transaction(async (tx) => {
+            // 1. Delete Commission activities and commissions
+            const tradeIds = await tx.trade.findMany({
+                where: { agentId: id },
+                select: { id: true }
+            }).then(trades => trades.map(t => t.id));
+            await tx.commissionActivity.deleteMany({
+                where: { commission: { agentId: id } }
+            });
+            await tx.commission.deleteMany({
+                where: { agentId: id }
+            });
+            // 2. Delete Notifications
+            await tx.notification.deleteMany({
                 where: { userId: id }
             });
-        }
-        // Delete user
-        await db_1.default.user.delete({
-            where: { id }
+            // 3. Delete Agent Documents and Notes (where the user is the agent)
+            await tx.customerDocument.deleteMany({
+                where: { agentId: id }
+            });
+            await tx.customerNote.deleteMany({
+                where: { agentId: id }
+            });
+            // 4. Delete Agent Profile if exists
+            if (user.agentProfile) {
+                await tx.agentProfile.delete({
+                    where: { userId: id }
+                });
+            }
+            // 5. Delete Customer profile if exists (causes the reported error)
+            await tx.customer.deleteMany({
+                where: { userId: id }
+            });
+            // 6. Handle Trades - In a real system we might not delete trades, 
+            // but since Trade.agentId is non-nullable, we must delete them or reassign.
+            // Before deleting trades, delete their dependents:
+            await tx.complianceFlag.deleteMany({
+                where: { tradeId: { in: tradeIds } }
+            });
+            await tx.complianceReport.deleteMany({
+                where: { tradeId: { in: tradeIds } }
+            });
+            await tx.overrideApproval.deleteMany({
+                where: { tradeId: { in: tradeIds } }
+            });
+            await tx.trade.deleteMany({
+                where: { agentId: id }
+            });
+            // 7. Finally delete the user
+            await tx.user.delete({
+                where: { id }
+            });
         });
         // Create audit log
         await db_1.default.auditLog.create({
@@ -555,5 +659,45 @@ async function exportAgents(req, res) {
     catch (error) {
         console.error("Error exporting agents:", error);
         res.status(500).json({ error: "Failed to export agents" });
+    }
+}
+// Delete a transaction (Hard Delete)
+async function deleteTransaction(req, res) {
+    try {
+        const { id } = req.params;
+        const trade = await db_1.default.trade.findUnique({
+            where: { id }
+        });
+        if (!trade) {
+            return res.status(404).json({ error: "Transaction not found" });
+        }
+        // Delete associated records first (e.g. Commissions or ComplianceFlags)
+        // Prisma will handle cascades if configured, but manually deleting related records ensures safety
+        await db_1.default.complianceFlag.deleteMany({
+            where: { tradeId: id }
+        });
+        await db_1.default.commission.deleteMany({
+            where: { tradeId: id }
+        });
+        // Finally, delete the trade itself
+        await db_1.default.trade.delete({
+            where: { id }
+        });
+        // Log the deletion
+        await db_1.default.auditLog.create({
+            data: {
+                actorId: req.user.id,
+                role: 'ADMIN',
+                action: 'TRANSACTION_DELETED',
+                entity: 'Trade',
+                entityId: id,
+                ip: req.ip || '127.0.0.1'
+            }
+        });
+        res.json({ success: true, message: "Transaction deleted successfully" });
+    }
+    catch (error) {
+        console.error("Error deleting transaction:", error);
+        res.status(500).json({ error: "Failed to delete transaction" });
     }
 }

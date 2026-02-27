@@ -18,6 +18,8 @@ import {
     exportAgents,
     getDashboardStats,
     getAdminTransaction,
+    deleteTransaction,
+    getFxMargin,
 } from "./admin.controller";
 
 const router = Router();
@@ -44,8 +46,10 @@ router.get("/dashboard/stats", getDashboardStats);
 // Transactions
 router.get("/transactions", listAllTrades);
 router.get("/transactions/:id", getAdminTransaction);
+router.delete("/transactions/:id", deleteTransaction);
 
 // Other
+router.get("/fx-margins", getFxMargin);
 router.post("/fx-margins", setFxMargin);
 router.post("/overrides/:id/approve", approveOverride);
 

@@ -8,6 +8,7 @@ exports.getCustomerStats = getCustomerStats;
 exports.getCustomer = getCustomer;
 exports.addCustomerNote = addCustomerNote;
 exports.getCustomerTransactions = getCustomerTransactions;
+exports.approveCustomer = approveCustomer;
 exports.exportCustomers = exportCustomers;
 const db_1 = __importDefault(require("../../config/db"));
 // Get all customers with filters
@@ -26,7 +27,7 @@ async function getCustomers(req, res) {
         if (status === 'verified') {
             where.verified = true;
         }
-        else if (status === 'unverified') {
+        else if (status === 'unverified' || status === 'pending') {
             where.verified = false;
         }
         const customers = await db_1.default.customer.findMany({
@@ -59,10 +60,10 @@ async function getCustomers(req, res) {
             return {
                 id: customer.id,
                 customerId: `PE-${customer.id.slice(0, 6).toUpperCase()}`,
-                customerName: customer.fullName,
+                name: customer.fullName,
                 lastTrade: lastTrade ? lastTrade.createdAt.toISOString() : null,
                 totalTransactions: trades.length,
-                verification: customer.verified ? 'Verified' : 'Pending',
+                verificationStatus: customer.verified ? 'Verified' : 'Pending',
                 email: customer.email,
                 phone: customer.phone || customer.user.phone,
                 createdAt: customer.createdAt
@@ -159,22 +160,28 @@ async function getCustomer(req, res) {
         const lastTrade = trades.length > 0 ? trades[0] : null;
         res.json({
             ...customer,
+            name: customer.fullName,
+            dateJoined: customer.createdAt.toISOString(),
             customerId: `PE-${customer.id.slice(0, 6).toUpperCase()}`,
-            statistics: {
-                totalTransactions: totalTrades,
-                buyTrades,
-                sellTrades,
-                totalVolume,
-                lastTransaction: lastTrade?.createdAt
-            },
+            verificationStatus: customer.verified ? 'Verified' : 'Pending',
+            totalTransactions: allTrades.length,
+            totalVolume: `₦${totalVolume.toLocaleString()}`,
+            lastTrade: lastTrade?.createdAt.toISOString() || null,
             recentTrades: trades.map(trade => ({
                 id: trade.id,
                 tradeId: `#PE-${trade.id.slice(0, 5).toUpperCase()}`,
                 date: trade.createdAt.toLocaleDateString(),
                 time: trade.createdAt.toLocaleTimeString(),
                 transaction: `${trade.sendCurrency} → ${trade.receiveCurrency}`,
-                amount: `₦${Number(trade.amount).toLocaleString()}`,
-                status: trade.status
+                amount: `${trade.receiveCurrency === 'NGN' ? '₦' : trade.receiveCurrency === 'USD' ? '$' : '£'}${Number(trade.amount).toLocaleString()}`,
+                status: trade.status,
+                agent: "Francis J." // This should ideally be fetched from the trade's agent link
+            })),
+            notes: customer.notes.map(n => ({
+                id: n.id,
+                content: n.content,
+                createdAt: n.createdAt.toISOString(),
+                createdBy: n.agent ? `${n.agent.firstName} ${n.agent.lastName}` : "System"
             }))
         });
     }
@@ -228,6 +235,31 @@ async function getCustomerTransactions(req, res) {
     catch (error) {
         console.error("Error fetching customer transactions:", error);
         res.status(500).json({ error: "Failed to fetch transactions" });
+    }
+}
+// Approve (Verify) Customer
+async function approveCustomer(req, res) {
+    try {
+        const { id } = req.params;
+        const customer = await db_1.default.customer.update({
+            where: { id },
+            data: { verified: true }
+        });
+        await db_1.default.auditLog.create({
+            data: {
+                actorId: req.user.id,
+                role: "ADMIN",
+                action: "CUSTOMER_APPROVED",
+                entity: "Customer",
+                entityId: id,
+                ip: req.ip || "127.0.0.1"
+            }
+        });
+        res.json({ success: true, customer });
+    }
+    catch (error) {
+        console.error("Error approving customer:", error);
+        res.status(500).json({ error: "Failed to approve customer" });
     }
 }
 // Export customers to CSV
