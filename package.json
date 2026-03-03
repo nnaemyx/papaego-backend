@@ -19,6 +19,12 @@
   "type": "commonjs",
   "dependencies": {
     "@prisma/client": "5.22.0",
+    "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^25.0.3",
     "@types/nodemailer": "^7.0.10",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.66.4",
@@ -31,17 +37,11 @@
     "nodemailer": "^8.0.1",
     "prisma": "5.22.0",
     "resend": "^6.9.2",
+    "typescript": "^5.9.3",
     "zod": "^4.3.5"
   },
   "devDependencies": {
-    "@types/bcrypt": "^6.0.0",
-    "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
-    "@types/jsonwebtoken": "^9.0.10",
-    "@types/multer": "^2.0.0",
-    "@types/node": "^25.0.3",
     "ts-node": "^10.9.2",
-    "ts-node-dev": "^2.0.0",
-    "typescript": "^5.9.3"
+    "ts-node-dev": "^2.0.0"
   }
 }

@@ -10,8 +10,12 @@
   },
   "exclude": [
     "node_modules",
+    "dist",
     "prisma.config.ts",
     "prisma/seed.ts",
     "test-db.ts"
+  ],
+  "include": [
+    "src/**/*"
   ]
 }
