@@ -8,7 +8,7 @@
     "build": "npx prisma generate && tsc",
     "start": "npx prisma migrate deploy && node dist/server.js",
     "seed": "ts-node prisma/seed.ts",
-    "postinstall": "npx prisma generate"
+    "postinstall": "npx prisma generate && npx tsc"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
