@@ -220,3 +220,241 @@ If you believe this is an error, please contact our support team immediately for
     throw new Error("Failed to send suspension email");
   }
 }
+
+interface TradeCompletionParams {
+  email: string;
+  customerName: string;
+  tradeId: string;
+  amount: string;
+  fromCurrency: string;
+  toCurrency: string;
+  loginLink: string;
+}
+
+/**
+ * Sends a trade completion notification email to the customer
+ */
+export async function sendTradeCompletionEmail({
+  email,
+  customerName,
+  tradeId,
+  amount,
+  fromCurrency,
+  toCurrency,
+  loginLink,
+}: TradeCompletionParams) {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: 'PapaEgo <transactions@papaego.com>',
+      to: email,
+      subject: `Your PapaEgo Trade #${tradeId} is Complete! 🎉`,
+      text: `
+Hello ${customerName},
+
+Great news! Your trade has been successfully completed.
+
+Trade Reference: #${tradeId}
+Amount: ${amount} ${fromCurrency} → ${toCurrency}
+
+You can view the full trade details by logging in to your dashboard.
+${loginLink}
+
+Thank you for trading with PapaEgo!
+© ${new Date().getFullYear()} PapaEgo. All rights reserved.
+      `,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          </head>
+          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Ubuntu, sans-serif; background-color: #f6f9fc; margin: 0; padding: 20px;">
+            <div style="background-color: #ffffff; max-width: 600px; margin: 0 auto; padding: 48px; border-radius: 8px;">
+              <h1 style="color: #c9a227; font-size: 28px; font-weight: 700; margin-bottom: 8px;">PapaEgo</h1>
+              <div style="background-color: #e2fded; border-radius: 8px; padding: 16px; margin-bottom: 24px; display: flex; align-items: center;">
+                <span style="color: #27ae60; font-size: 20px; margin-right: 8px;">✅</span>
+                <p style="color: #27ae60; font-weight: 600; margin: 0;">Trade Completed Successfully!</p>
+              </div>
+
+              <p style="color: #333; font-size: 16px; margin-bottom: 16px;">Hello ${customerName},</p>
+              <p style="color: #333; font-size: 16px; margin-bottom: 24px;">Great news! Your trade has been successfully completed and processed by our team.</p>
+
+              <div style="background-color: #f7f8f9; border-radius: 8px; padding: 20px; margin-bottom: 24px;">
+                <h3 style="color: #012333; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;">Trade Summary</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="color: #6b7078; font-size: 14px; padding: 6px 0;">Trade Reference</td>
+                    <td style="color: #012333; font-size: 14px; font-weight: 600; text-align: right;">#${tradeId}</td>
+                  </tr>
+                  <tr>
+                    <td style="color: #6b7078; font-size: 14px; padding: 6px 0;">Amount</td>
+                    <td style="color: #012333; font-size: 14px; font-weight: 600; text-align: right;">${amount} ${fromCurrency}</td>
+                  </tr>
+                  <tr>
+                    <td style="color: #6b7078; font-size: 14px; padding: 6px 0;">Converted To</td>
+                    <td style="color: #012333; font-size: 14px; font-weight: 600; text-align: right;">${toCurrency}</td>
+                  </tr>
+                  <tr>
+                    <td style="color: #6b7078; font-size: 14px; padding: 6px 0;">Status</td>
+                    <td style="color: #27ae60; font-size: 14px; font-weight: 600; text-align: right;">Completed ✓</td>
+                  </tr>
+                </table>
+              </div>
+
+              <div style="text-align: center; margin: 32px 0;">
+                <a href="${loginLink}" style="background-color: #c9a227; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 6px; font-size: 16px; font-weight: 600; display: inline-block;">
+                  View Trade Details
+                </a>
+              </div>
+
+              <p style="color: #6b7078; font-size: 14px; line-height: 20px; margin-top: 24px;">
+                Thank you for trading with PapaEgo. If you have any questions, please don't hesitate to contact our support team.
+              </p>
+
+              <hr style="border: 0; border-top: 1px solid #e6ebf1; margin: 32px 0;" />
+              <p style="color: #8898aa; font-size: 12px; margin: 0;">
+                © ${new Date().getFullYear()} PapaEgo. All rights reserved.<br>
+                Empowering global financial transactions.
+              </p>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+    if (error) throw error;
+    console.log("✅ Trade completion email sent:", data?.id);
+    return { success: true, messageId: data?.id };
+  } catch (error) {
+    console.error("❌ Error sending trade completion email:", error);
+    // Don't throw — email failure shouldn't block trade completion
+    return { success: false };
+  }
+}
+
+interface TradeInitiatedParams {
+  agentEmail: string;
+  agentName: string;
+  customerName: string;
+  amount: string;
+  currency: string;
+  tradeId: string;
+  dashboardLink?: string;
+}
+
+/**
+ * Notifies an agent that a customer has initiated a trade request
+ */
+export async function sendTradeInitiatedEmail({
+  agentEmail,
+  agentName,
+  customerName,
+  amount,
+  currency,
+  tradeId,
+  dashboardLink,
+}: TradeInitiatedParams) {
+  try {
+    await resend.emails.send({
+      from: 'PapaEgo <requests@papaego.com>',
+      to: agentEmail,
+      subject: `New Trade Request: ${customerName} initiated a trade`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px;">
+          <h2>New Trade Request 📥</h2>
+          <p>Hello ${agentName},</p>
+          <p><strong>${customerName}</strong> has just initiated a new trade request assigned to you.</p>
+          <p><strong>Amount:</strong> ${amount} ${currency}</p>
+          <div style="margin: 20px 0;">
+            <a href="${dashboardLink}" style="background: #c9a227; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">View Trade Request</a>
+          </div>
+          <p>Please log in to provide a quote and supplier account details.</p>
+        </div>
+      `
+    });
+  } catch (error) {
+    console.error("Error sending trade initiation email:", error);
+  }
+}
+
+interface SupplierConfirmedParams {
+  customerEmail: string;
+  customerName: string;
+  tradeId: string;
+  amount: string;
+  currency: string;
+  dashboardLink: string;
+}
+
+/**
+ * Notifies a customer that the agent has provided the supplier account and rate
+ */
+export async function sendSupplierConfirmedEmail({
+  customerEmail,
+  customerName,
+  tradeId,
+  amount,
+  currency,
+  dashboardLink,
+}: SupplierConfirmedParams) {
+  try {
+    await resend.emails.send({
+      from: 'PapaEgo <updates@papaego.com>',
+      to: customerEmail,
+      subject: `Action Required: Quote Ready for Trade #${tradeId}`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px;">
+          <h2>Quote & Supplier Ready! ✅</h2>
+          <p>Hello ${customerName},</p>
+          <p>Your agent has provided the conversion rate and supplier account details for your trade request <strong>#${tradeId}</strong>.</p>
+          <p><strong>Amount:</strong> ${amount} ${currency}</p>
+          <div style="margin: 20px 0;">
+            <a href="${dashboardLink}" style="background: #c9a227; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Confirm & Pay Now</a>
+          </div>
+          <p>Please review the details and confirm to lock in the rate.</p>
+        </div>
+      `
+    });
+  } catch (error) {
+    console.error("Error sending supplier confirmation email:", error);
+  }
+}
+/**
+ * Notifies a customer that their trade has been cancelled or rejected
+ */
+export async function sendTradeCancelledEmail({
+  customerEmail,
+  customerName,
+  tradeId,
+  reason,
+  dashboardLink,
+}: {
+  customerEmail: string;
+  customerName: string;
+  tradeId: string;
+  reason?: string;
+  dashboardLink: string;
+}) {
+  try {
+    await resend.emails.send({
+      from: 'PapaEgo <support@papaego.com>',
+      to: customerEmail,
+      subject: `Update on your Trade #${tradeId}`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px;">
+          <h2 style="color: #e05555;">Trade Cancelled ❌</h2>
+          <p>Hello ${customerName},</p>
+          <p>This is to inform you that your trade <strong>#${tradeId}</strong> has been cancelled.</p>
+          ${reason ? `<p><strong>Reason:</strong> ${reason}</p>` : ''}
+          <div style="margin: 20px 0;">
+            <a href="${dashboardLink}" style="background: #c9a227; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">View Trade Details</a>
+          </div>
+          <p>If you have any questions or would like to discuss this further, please contact our support team.</p>
+          <p>Thank you for choosing PapaEgo.</p>
+        </div>
+      `
+    });
+  } catch (error) {
+    console.error("Error sending trade cancellation email:", error);
+  }
+}

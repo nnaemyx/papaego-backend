@@ -12,14 +12,19 @@ import authRoutes from "./auth/auth.routes";
 import complianceRoutes from "./compliance/compliance.routes";
 import notificationRoutes from "./notifications/notification.routes";
 import fxRoutes from "./fx/fx.routes";
+import customerPortalRoutes from "./customer/customer.portal.routes";
+import bankRoutes from "./bank/bank.routes";
+import chatRoutes from "./chat/chat.routes";
+import uploadRoutes from "./uploads/upload.routes";
 
 const router = Router();
 
 router.use("/auth", authRoutes);
-router.use("/trades", tradeRoutes); // Keeping original trade routes for now, though logic might be moving to specific role routes
+router.use("/trades", tradeRoutes);
 router.use("/webhooks", webhookRoutes);
+router.use("/customer/portal", customerPortalRoutes); // Customer self-service portal
 router.use("/customer", customerRoutes);
-router.use("/agent/onboarding", agentOnboardingRoutes); // Public onboarding routes (no auth)
+router.use("/agent/onboarding", agentOnboardingRoutes);
 router.use("/agent", agentRoutes);
 router.use("/admin", adminRoutes);
 router.use("/admin/customers", adminCustomerRoutes);
@@ -28,5 +33,8 @@ router.use("/admin/audit-logs", adminAuditRoutes);
 router.use("/compliance", complianceRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/fx", fxRoutes);
+router.use("/bank", bankRoutes);
+router.use("/chat", chatRoutes);
+router.use("/upload", uploadRoutes);
 
 export default router;

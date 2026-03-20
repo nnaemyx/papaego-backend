@@ -10,22 +10,8 @@ export async function getAgentCustomers(req: Request, res: Response) {
         const agentId = (req as any).user.id;
         const { search, status, type, activity, dateJoined } = req.query;
 
-        // 1. Find all trades for this agent to get their customers
-        const trades = await prisma.trade.findMany({
-            where: { agentId },
-            select: { customerId: true, createdAt: true }
-        });
-
-        if (trades.length === 0) {
-            return res.json([]);
-        }
-
-        const customerIds = [...new Set(trades.map(t => t.customerId))];
-
-        // 2. Fetch customers
-        const where: any = {
-            id: { in: customerIds }
-        };
+        // 1. Fetch all customers with optional filters
+        const where: any = {};
 
         if (search) {
             where.OR = [
@@ -58,8 +44,13 @@ export async function getAgentCustomers(req: Request, res: Response) {
             orderBy: { createdAt: 'desc' }
         });
 
-        // Calculate metadata (trades count, volume) per customer to match frontend UI requirements
-        const customerTradesMap = trades.reduce((acc, trade) => {
+        // Calculate statistics per customer
+        const customerTrades = await prisma.trade.findMany({
+            where: { customerId: { in: customers.map(c => c.id) } },
+            select: { customerId: true }
+        });
+
+        const customerTradesMap = customerTrades.reduce((acc, trade) => {
             if (!acc[trade.customerId]) acc[trade.customerId] = 0;
             acc[trade.customerId]++;
             return acc;
@@ -97,19 +88,11 @@ export async function getAgentCustomers(req: Request, res: Response) {
 export async function getAgentCustomer(req: Request, res: Response) {
     try {
         const { id } = req.params;
-        const agentId = (req as any).user.id;
-
-        // Verify the customer belongs to the agent
-        const tradeExists = await prisma.trade.findFirst({
-            where: { customerId: id, agentId }
-        });
-
-        if (!tradeExists) {
-            return res.status(403).json({ error: "Access denied or customer not found" });
-        }
+        // Agents can now view any customer in the system to facilitate trade initiation
 
         const customer = await prisma.customer.findUnique({
-            where: { id }
+            where: { id },
+            include: { bankDetails: true }
         });
 
         if (!customer) {
@@ -117,7 +100,7 @@ export async function getAgentCustomer(req: Request, res: Response) {
         }
 
         const tradesCount = await prisma.trade.count({
-            where: { customerId: id, agentId }
+            where: { customerId: id }
         });
 
         const formatted = {
@@ -133,6 +116,7 @@ export async function getAgentCustomer(req: Request, res: Response) {
             customerType: 'Individual',
             lastActive: new Date(customer.createdAt).toLocaleDateString('en-GB'),
             riskLevel: 'Low',
+            bankDetails: (customer as any).bankDetails,
             notes: []
         };
 
@@ -150,41 +134,31 @@ export async function getAgentCustomer(req: Request, res: Response) {
  */
 export async function getAgentCustomerStats(req: Request, res: Response) {
     try {
-        const agentId = (req as any).user.id;
+        const [totalCustomers, verifiedCustomers] = await Promise.all([
+            prisma.customer.count(),
+            prisma.customer.count({ where: { verified: true } })
+        ]);
 
-        const trades = await prisma.trade.findMany({
-            where: { agentId },
-            select: { customerId: true, createdAt: true }
+        // Fetch high value (implementing real logic here: volume > 1,000,000 NGN)
+        const highValueTrades = await prisma.trade.groupBy({
+            by: ['customerId'],
+            _sum: { amount: true },
+            having: { amount: { _sum: { gt: 1000000 } } }
         });
-
-        const customerIds = [...new Set(trades.map(t => t.customerId))];
-
-        if (customerIds.length === 0) {
-            return res.json({
-                totalCustomers: 0,
-                verifiedCustomers: 0,
-                highValueCustomers: 0,
-                activeCustomersToday: 0
-            });
-        }
-
-        const customers = await prisma.customer.findMany({
-            where: { id: { in: customerIds } }
-        });
-
-        const verifiedCustomers = customers.filter(c => c.verified).length;
+        const highValueCount = highValueTrades.length;
 
         // Active today
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        const activeToday = trades.filter(t => new Date(t.createdAt) >= today).map(t => t.customerId);
-        const uniqueActiveToday = new Set(activeToday).size;
+        const activeTodayCount = await prisma.trade.count({
+            where: { createdAt: { gte: today } }
+        });
 
         res.json({
-            totalCustomers: customers.length,
+            totalCustomers,
             verifiedCustomers,
-            highValueCustomers: 0, // Implement high value logic if trade amounts are queried
-            activeCustomersToday: uniqueActiveToday
+            highValueCustomers: highValueCount,
+            activeCustomersToday: activeTodayCount
         });
 
     } catch (error) {

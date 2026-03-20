@@ -21,6 +21,7 @@ import {
     deleteTransaction,
     getFxMargin,
 } from "./admin.controller";
+import { freezeCommission, unfreezeCommission } from "./admin.trade.controller";
 
 const router = Router();
 
@@ -47,6 +48,8 @@ router.get("/dashboard/stats", getDashboardStats);
 router.get("/transactions", listAllTrades);
 router.get("/transactions/:id", getAdminTransaction);
 router.delete("/transactions/:id", deleteTransaction);
+router.patch("/transactions/:id/freeze", freezeCommission);
+router.patch("/transactions/:id/unfreeze", unfreezeCommission);
 
 // Other
 router.get("/fx-margins", getFxMargin);

@@ -9,7 +9,8 @@ import {
 } from "../../services/email.service";
 
 export async function createAgent(req: Request, res: Response) {
-    const { email, phone, region, firstName, lastName } = req.body;
+    const { email: rawEmail, phone, region, firstName, lastName } = req.body;
+    const email = rawEmail?.trim().toLowerCase();
 
     // Validate required fields
     if (!email) {

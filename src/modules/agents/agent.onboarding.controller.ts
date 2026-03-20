@@ -147,8 +147,8 @@ export async function uploadOnboardingDocument(req: Request, res: Response) {
             return res.status(400).json({ error: "No file uploaded" });
         }
 
-        // Return the path prefix that matches the static folder config in app.ts
-        const fileUrl = `/uploads/${req.file.filename}`;
+        // Return the Cloudinary URL directly
+        const fileUrl = req.file.path;
 
         // Let the frontend complete the onboarding by pushing this URL string
         res.json({ url: fileUrl });

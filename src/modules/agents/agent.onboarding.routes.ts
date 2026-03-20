@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { upload } from "../../middlewares/upload.middleware";
+import { uploadToCloudinary } from "../../middlewares/upload.middleware";
 import {
     verifyOnboardingToken,
     completeOnboarding,
@@ -13,6 +13,6 @@ router.get("/verify-token", verifyOnboardingToken);
 router.post("/complete-onboarding", completeOnboarding);
 
 // File uploads
-router.post("/upload", upload.single("file"), uploadOnboardingDocument);
+router.post("/upload", uploadToCloudinary.single("file"), uploadOnboardingDocument);
 
 export default router;

@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  output   = "../src/generated/client"
 }
 
 datasource db {
@@ -17,6 +18,7 @@ enum Role {
 }
 
 enum TradeStatus {
+  REQUESTED // Customer initiated request
   INITIATED
   CUSTOMER_VERIFIED
   QUOTED
@@ -73,6 +75,8 @@ model User {
   agentNotes     CustomerNote[]     @relation("AgentNotes")
   notifications  Notification[]
   agentDocuments CustomerDocument[] @relation("AgentDocuments")
+  agentTrades    Trade[]            @relation("AgentTrades")
+  agentTradeRequests TradeRequest[] @relation("AgentTradeRequests")
 }
 
 model Notification {
@@ -117,20 +121,72 @@ model AgentProfile {
 // ---------- CUSTOMERS ----------
 
 model Customer {
-  id        String   @id @default(uuid())
-  userId    String   @unique
-  bvn       String
-  fullName  String
-  bankName  String?
-  accountNo String?
-  email     String?
-  phone     String?
-  verified  Boolean  @default(false)
-  createdAt DateTime @default(now())
+  id            String   @id @default(uuid())
+  userId        String   @unique
+  bvn           String
+  fullName      String
+  bankName      String?
+  accountNo     String?
+  email         String?
+  phone         String?
+  gender        String?
+  dateOfBirth   DateTime?
+  homeAddress   String?
+  nin           String?
+  companyName   String?
+  companySector String?
+  governmentIdUrl     String?
+  proofOfAddressUrl   String?
+  verified      Boolean  @default(false)
+  createdAt     DateTime @default(now())
 
   user      User               @relation(fields: [userId], references: [id])
   notes     CustomerNote[]
   documents CustomerDocument[]
+  trades    Trade[]            @relation("CustomerTrades")
+  bankDetails CustomerBankDetails[]
+  tradeRequests TradeRequest[]
+}
+
+model CustomerBankDetails {
+  id            String   @id @default(uuid())
+  customerId    String
+  bankName      String
+  accountName   String
+  accountNumber String
+  routingNumber String?
+  swiftCode     String?
+  createdAt     DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id])
+}
+
+model TradeRequest {
+  id              String   @id @default(uuid())
+  customerId      String
+  agentId         String?
+  amount          Decimal
+  sendCurrency    String
+  receiveCurrency String
+  purpose         String?
+  tradeType       String   @default("BUY") // BUY, SELL
+  receiptUrl      String?  // Receipt uploaded during initialization
+  status          String   @default("PENDING") // PENDING, POOL, PROCESSED, REJECTED
+  createdAt       DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  agent    User?    @relation("AgentTradeRequests", fields: [agentId], references: [id])
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  tradeId   String
+  senderId  String
+  message   String
+  role      String   // CUSTOMER, AGENT, ADMIN
+  createdAt DateTime @default(now())
+
+  trade Trade @relation(fields: [tradeId], references: [id])
 }
 
 // ---------- CUSTOMER DOCUMENTS ----------
@@ -160,6 +216,7 @@ model Trade {
   customerId String
   countryId  String
 
+  tradeType       String   @default("BUY") // BUY, SELL
   sendCurrency    String
   receiveCurrency String
   amount          Decimal
@@ -177,8 +234,15 @@ model Trade {
   recipientDetails String?
   payoutAmount     String?
   paymentProofUrl  String?
+  payoutProofUrl   String?
 
-  commissions Commission[]
+  // Escrow / Admin Hold
+  isCommissionFrozen Boolean @default(false)
+
+  customer     Customer      @relation("CustomerTrades", fields: [customerId], references: [id])
+  agent        User          @relation("AgentTrades", fields: [agentId], references: [id])
+  commissions  Commission[]
+  chatMessages ChatMessage[]
 }
 
 // ---------- COMPLIANCE ----------

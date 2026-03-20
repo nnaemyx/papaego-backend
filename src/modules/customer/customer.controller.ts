@@ -4,7 +4,7 @@ import prisma from "../../config/db";
 // Get all customers with filters
 export async function getCustomers(req: Request, res: Response) {
     try {
-        const { status, search, type, activityLevel } = req.query;
+        const { status, search, type, activityLevel, sector } = req.query;
         const where: any = {};
 
         // Add search functionality
@@ -16,10 +16,20 @@ export async function getCustomers(req: Request, res: Response) {
             ];
         }
 
-        if (status === 'verified') {
+        if (status === 'Verified') {
             where.verified = true;
-        } else if (status === 'unverified' || status === 'pending') {
+        } else if (status === 'Pending' || status === 'Failed') {
             where.verified = false;
+        }
+
+        if (type === 'Business') {
+            where.companyName = { not: null };
+        } else if (type === 'Individual') {
+            where.companyName = null;
+        }
+
+        if (sector && sector !== 'All') {
+            where.companySector = sector as string;
         }
 
         const customers = await prisma.customer.findMany({
@@ -64,7 +74,9 @@ export async function getCustomers(req: Request, res: Response) {
                     verificationStatus: customer.verified ? 'Verified' : 'Pending',
                     email: customer.email,
                     phone: customer.phone || customer.user.phone,
-                    createdAt: customer.createdAt
+                    createdAt: customer.createdAt,
+                    customerType: customer.companyName ? 'Business' : 'Individual',
+                    companySector: customer.companySector
                 };
             })
         );
@@ -171,6 +183,85 @@ export async function getCustomer(req: Request, res: Response) {
         const sellTrades = allTrades.filter(t => t.receiveCurrency === 'NGN').length;
 
         const totalVolume = allTrades.reduce((sum, trade) => sum + Number(trade.amount), 0);
+        
+        // Find most traded pair
+        const pairCounts: Record<string, number> = {};
+        let mostTradedPair = "None";
+        let maxPairCount = 0;
+        allTrades.forEach(t => {
+            const pair = `${t.sendCurrency} → ${t.receiveCurrency}`;
+            pairCounts[pair] = (pairCounts[pair] || 0) + 1;
+            if (pairCounts[pair] > maxPairCount) {
+                maxPairCount = pairCounts[pair];
+                mostTradedPair = pair;
+            }
+        });
+
+        // Compute linked agents from distinct trades
+        const uniqueAgentIds = Array.from(new Set(allTrades.map(t => t.agentId)));
+        
+        const agents = await prisma.user.findMany({
+            where: { id: { in: uniqueAgentIds } },
+            include: { agentProfile: true }
+        });
+        
+        const agentMap = new Map();
+        agents.forEach(a => agentMap.set(a.id, a));
+
+        const linkedAgentsMap = new Map();
+        allTrades.forEach(t => {
+            const agentUser = agentMap.get(t.agentId);
+            if (agentUser) {
+                if (!linkedAgentsMap.has(t.agentId)) {
+                    linkedAgentsMap.set(t.agentId, {
+                        name: `${agentUser.firstName} ${agentUser.lastName}`,
+                        agentId: `#PE-${t.agentId.slice(0,5).toUpperCase()}`,
+                        role: "Agent",
+                        region: agentUser.agentProfile?.region || "Unknown",
+                        tradesHandled: 1
+                    });
+                } else {
+                    const existing = linkedAgentsMap.get(t.agentId);
+                    existing.tradesHandled += 1;
+                }
+            }
+        });
+        const linkedAgents = Array.from(linkedAgentsMap.values());
+
+        // Construct Activity Timeline
+        const auditLogs = await prisma.auditLog.findMany({
+            where: {
+                OR: [
+                    { entity: "Customer", entityId: id },
+                    { entity: "Trade", entityId: { in: allTrades.map(t => t.id) } }
+                ]
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 20
+        });
+
+        const activityTimeline = auditLogs.map(log => {
+            let eventText = `${log.action} action on ${log.entity}`;
+            if (log.action === "CUSTOMER_APPROVED") eventText = "Account KYC documents verified";
+            else if (log.action === "TRADE_CREATED") eventText = `Trade initiated`;
+            else if (log.action === "TRADE_COMPLETED") eventText = `Trade completed`;
+            else if (log.action === "TRADE_CANCELLED") eventText = `Trade cancelled`;
+
+            return {
+                date: log.createdAt.toLocaleDateString(),
+                time: log.createdAt.toLocaleTimeString(),
+                event: eventText,
+                type: log.entity === "Customer" ? "kyc" : (log.action === "TRADE_CANCELLED" ? "cancel" : "trade")
+            };
+        });
+
+        // Add a registration event manually at the bottom
+        activityTimeline.push({
+            date: customer.createdAt.toLocaleDateString(),
+            time: customer.createdAt.toLocaleTimeString(),
+            event: "Account registered on PapaEgo",
+            type: "register"
+        });
 
         const lastTrade = trades.length > 0 ? trades[0] : null;
 
@@ -182,23 +273,30 @@ export async function getCustomer(req: Request, res: Response) {
             verificationStatus: customer.verified ? 'Verified' : 'Pending',
             totalTransactions: allTrades.length,
             totalVolume: `₦${totalVolume.toLocaleString()}`,
+            mostTradedPair,
+            customerType: customer.companyName ? 'Business' : 'Individual',
             lastTrade: lastTrade?.createdAt.toISOString() || null,
-            recentTrades: trades.map(trade => ({
-                id: trade.id,
-                tradeId: `#PE-${trade.id.slice(0, 5).toUpperCase()}`,
-                date: trade.createdAt.toLocaleDateString(),
-                time: trade.createdAt.toLocaleTimeString(),
-                transaction: `${trade.sendCurrency} → ${trade.receiveCurrency}`,
-                amount: `${trade.receiveCurrency === 'NGN' ? '₦' : trade.receiveCurrency === 'USD' ? '$' : '£'}${Number(trade.amount).toLocaleString()}`,
-                status: trade.status,
-                agent: "Francis J." // This should ideally be fetched from the trade's agent link
-            })),
+            recentTrades: trades.map(trade => {
+                const agentUser = agentMap.get(trade.agentId);
+                return {
+                    id: trade.id,
+                    tradeId: `#PE-${trade.id.slice(0, 5).toUpperCase()}`,
+                    date: trade.createdAt.toLocaleDateString(),
+                    time: trade.createdAt.toLocaleTimeString(),
+                    transaction: `${trade.sendCurrency} → ${trade.receiveCurrency}`,
+                    amount: `${trade.receiveCurrency === 'NGN' ? '₦' : trade.receiveCurrency === 'USD' ? '$' : '£'}${Number(trade.amount).toLocaleString()}`,
+                    status: trade.status,
+                    agent: agentUser ? `${agentUser.firstName} ${agentUser.lastName}` : "System"
+                };
+            }),
             notes: customer.notes.map(n => ({
                 id: n.id,
                 content: n.content,
                 createdAt: n.createdAt.toISOString(),
                 createdBy: n.agent ? `${n.agent.firstName} ${n.agent.lastName}` : "System"
-            }))
+            })),
+            linkedAgents,
+            activityTimeline
         });
     } catch (error) {
         console.error("Error fetching customer:", error);

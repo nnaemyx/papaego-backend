@@ -96,8 +96,37 @@ export async function getAgentDocument(req: Request, res: Response) {
  * POST /api/agent/documents
  */
 export async function uploadAgentDocument(req: Request, res: Response) {
-    // We will implement multer logic here next
-    res.status(501).json({ error: "Not implemented yet" });
+    try {
+        const agentId = (req as any).user.id;
+        const file = (req as any).file;
+        const { customerId, documentType, notes } = req.body;
+
+        if (!file) {
+            return res.status(400).json({ error: "No document file uploaded" });
+        }
+
+        if (!customerId || !documentType) {
+            return res.status(400).json({ error: "Customer ID and document type are required" });
+        }
+
+        const document = await prisma.customerDocument.create({
+            data: {
+                customerId,
+                agentId,
+                documentType,
+                fileUrl: file.path, // Cloudinary URL
+                fileName: file.originalname,
+                fileSize: file.size,
+                status: "Pending Review",
+                notes
+            }
+        });
+
+        res.status(201).json(document);
+    } catch (error) {
+        console.error("Error uploading document:", error);
+        res.status(500).json({ error: "Failed to upload document" });
+    }
 }
 
 /**

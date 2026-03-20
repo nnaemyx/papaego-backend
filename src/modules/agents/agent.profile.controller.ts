@@ -99,10 +99,9 @@ export async function uploadProfileAvatar(req: Request, res: Response) {
             return res.status(400).json({ error: "No file uploaded" });
         }
 
-        // Build the public URL path for the uploaded file
-        const avatarUrl = `/uploads/${file.filename}`;
+        // Cloudinary provides the secure_url in file.path (or file.secure_url)
+        const avatarUrl = file.path;
 
-        // Store the avatar URL in governmentIdUrl as a quick solution (no schema migration needed)
         await prisma.agentProfile.update({
             where: { userId },
             data: { governmentIdUrl: avatarUrl }

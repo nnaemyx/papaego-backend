@@ -5,7 +5,8 @@ import prisma from "../../config/db";
 
 export async function signup(req: Request, res: Response, next: NextFunction) {
     try {
-        const { email, password, phone, role } = req.body;
+        const { email: rawEmail, password, phone, role } = req.body;
+        const email = rawEmail.trim().toLowerCase();
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -32,23 +33,33 @@ export async function signup(req: Request, res: Response, next: NextFunction) {
 
 export async function login(req: Request, res: Response, next: NextFunction) {
     try {
-        const { email, password } = req.body;
+        const rawEmail = req.body.email;
+        const email = rawEmail?.trim().toLowerCase();
+        const { password } = req.body;
 
-        console.log("🔐 Login attempt for:", email);
+        console.log(`🔐 Login attempt for: ${email}`);
 
         const user = await prisma.user.findFirst({
             where: { email }
         });
 
-        if (!user || !user.isActive) {
-            console.log("❌ User not found or inactive");
-            return res.status(401).json({ error: "Invalid credentials or inactive account" });
+        if (!user) {
+            console.log(`❌ User not found in DB for email: ${email}`);
+            return res.status(401).json({ error: "User not found or inactive" });
         }
 
-        const isValid = await bcrypt.compare(password, user.password);
+        console.log(`👤 User found: ${user.email}, Role: ${user.role}, Active: ${user.isActive}`);
 
-        if (!isValid) {
-            console.log("❌ Invalid password");
+        if (!user.isActive) {
+            console.log(`❌ User is inactive: ${email}`);
+            return res.status(401).json({ error: "User not found or inactive" });
+        }
+
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+        console.log(`🔑 Password valid: ${isPasswordValid}`);
+
+        if (!isPasswordValid) {
+            console.log(`❌ Invalid password for: ${email}`);
             return res.status(401).json({ error: "Invalid credentials" });
         }
 

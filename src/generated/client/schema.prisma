@@ -1,0 +1,346 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- ENUMS ----------
+
+enum Role {
+  AGENT
+  CUSTOMER
+  COMPLIANCE
+  ADMIN
+}
+
+enum TradeStatus {
+  REQUESTED // Customer initiated request
+  INITIATED
+  CUSTOMER_VERIFIED
+  QUOTED
+  SENT_TO_CUSTOMER
+  CUSTOMER_CONFIRMED
+  AWAITING_PAYMENT
+  PAYMENT_CONFIRMED
+  FLAGGED
+  UNDER_REVIEW
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ReportType {
+  CTR
+  STR
+}
+
+enum CommissionType {
+  TRANSACTION
+  REFERRAL
+  BONUS
+}
+
+enum CommissionStatus {
+  PENDING
+  PAID
+  DISPUTED
+}
+
+// ---------- CORE ----------
+
+model User {
+  id        String   @id @default(uuid())
+  role      Role
+  email     String?  @unique
+  phone     String
+  password  String
+  firstName String?
+  lastName  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  agentProfile       AgentProfile?
+  customer           Customer?
+  commissions        Commission[]       @relation("AgentCommissions")
+  agentNotes         CustomerNote[]     @relation("AgentNotes")
+  notifications      Notification[]
+  agentDocuments     CustomerDocument[] @relation("AgentDocuments")
+  agentTrades        Trade[]            @relation("AgentTrades")
+  agentTradeRequests TradeRequest[]     @relation("AgentTradeRequests")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  type      String // INFO, WARNING, SUCCESS, ERROR
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model Country {
+  id       String @id @default(uuid())
+  name     String
+  isoCode  String
+  currency String
+}
+
+// ---------- AGENTS ----------
+
+model AgentProfile {
+  userId                String    @id
+  region                String
+  lga                   String
+  licenseId             String
+  dailyLimit            Decimal
+  monthlyLimit          Decimal
+  homeAddress           String?
+  dateOfBirth           DateTime?
+  governmentIdUrl       String?
+  proofOfAddressUrl     String?
+  onboardingStatus      String    @default("PENDING") // PENDING, IN_PROGRESS, SUBMITTED, APPROVED
+  onboardingToken       String?   @unique
+  onboardingTokenExpiry DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+// ---------- CUSTOMERS ----------
+
+model Customer {
+  id                String    @id @default(uuid())
+  userId            String    @unique
+  bvn               String
+  fullName          String
+  bankName          String?
+  accountNo         String?
+  email             String?
+  phone             String?
+  gender            String?
+  dateOfBirth       DateTime?
+  homeAddress       String?
+  nin               String?
+  companyName       String?
+  companySector     String?
+  governmentIdUrl   String?
+  proofOfAddressUrl String?
+  verified          Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+
+  user          User                  @relation(fields: [userId], references: [id])
+  notes         CustomerNote[]
+  documents     CustomerDocument[]
+  trades        Trade[]               @relation("CustomerTrades")
+  bankDetails   CustomerBankDetails[]
+  tradeRequests TradeRequest[]
+}
+
+model CustomerBankDetails {
+  id            String   @id @default(uuid())
+  customerId    String
+  bankName      String
+  accountName   String
+  accountNumber String
+  routingNumber String?
+  swiftCode     String?
+  createdAt     DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id])
+}
+
+model TradeRequest {
+  id              String   @id @default(uuid())
+  customerId      String
+  agentId         String?
+  amount          Decimal
+  sendCurrency    String
+  receiveCurrency String
+  purpose         String?
+  tradeType       String   @default("BUY") // BUY, SELL
+  receiptUrl      String? // Receipt uploaded during initialization
+  status          String   @default("PENDING") // PENDING, POOL, PROCESSED, REJECTED
+  createdAt       DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  agent    User?    @relation("AgentTradeRequests", fields: [agentId], references: [id])
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  tradeId   String
+  senderId  String
+  message   String
+  role      String // CUSTOMER, AGENT, ADMIN
+  createdAt DateTime @default(now())
+
+  trade Trade @relation(fields: [tradeId], references: [id])
+}
+
+// ---------- CUSTOMER DOCUMENTS ----------
+
+model CustomerDocument {
+  id           String   @id @default(uuid())
+  customerId   String
+  agentId      String
+  documentType String
+  fileUrl      String
+  fileName     String
+  fileSize     Int
+  status       String   @default("Pending Review")
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  agent    User     @relation("AgentDocuments", fields: [agentId], references: [id])
+}
+
+// ---------- TRADES ----------
+
+model Trade {
+  id         String @id @default(uuid())
+  agentId    String
+  customerId String
+  countryId  String
+
+  tradeType       String    @default("BUY") // BUY, SELL
+  sendCurrency    String
+  receiveCurrency String
+  amount          Decimal
+  fxRate          Decimal?
+  lockedUntil     DateTime?
+
+  status    TradeStatus
+  createdAt DateTime    @default(now())
+
+  // New fields for payment and payout details
+  paymentMethod    String?
+  paymentSource    String?
+  payoutMethod     String?
+  recipientName    String?
+  recipientDetails String?
+  payoutAmount     String?
+  paymentProofUrl  String?
+  payoutProofUrl   String?
+
+  // Escrow / Admin Hold
+  isCommissionFrozen Boolean @default(false)
+
+  customer     Customer      @relation("CustomerTrades", fields: [customerId], references: [id])
+  agent        User          @relation("AgentTrades", fields: [agentId], references: [id])
+  commissions  Commission[]
+  chatMessages ChatMessage[]
+}
+
+// ---------- COMPLIANCE ----------
+
+model ComplianceFlag {
+  id        String   @id @default(uuid())
+  tradeId   String
+  reason    String
+  severity  String
+  createdAt DateTime @default(now())
+}
+
+model ComplianceReport {
+  id        String     @id @default(uuid())
+  tradeId   String
+  type      ReportType
+  data      Json
+  createdAt DateTime   @default(now())
+}
+
+// ---------- APPROVALS ----------
+
+model OverrideApproval {
+  id          String         @id @default(uuid())
+  tradeId     String
+  requestedBy String
+  approvedBy  String?
+  status      ApprovalStatus @default(PENDING)
+}
+
+// ---------- AUDIT ----------
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  actorId   String
+  role      Role
+  action    String
+  entity    String
+  entityId  String
+  ip        String
+  createdAt DateTime @default(now())
+}
+
+model FxMargin {
+  id        String  @id @default(uuid())
+  countryId String  @unique
+  margin    Decimal
+}
+
+model SystemConfig {
+  key   String @id
+  value Json
+}
+
+// ---------- COMMISSIONS ----------
+
+model Commission {
+  id            String           @id @default(uuid())
+  reference     String           @unique
+  agentId       String
+  tradeId       String
+  type          CommissionType
+  amount        Decimal
+  currency      String           @default("NGN")
+  rate          Decimal?
+  status        CommissionStatus @default(PENDING)
+  paidAt        DateTime?
+  payoutMethod  String?
+  bankName      String?
+  accountName   String?
+  accountNumber String?
+  notes         String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  agent      User                 @relation("AgentCommissions", fields: [agentId], references: [id])
+  trade      Trade                @relation(fields: [tradeId], references: [id])
+  activities CommissionActivity[]
+}
+
+model CommissionActivity {
+  id           String   @id @default(uuid())
+  commissionId String
+  action       String
+  actorId      String?
+  description  String
+  createdAt    DateTime @default(now())
+
+  commission Commission @relation(fields: [commissionId], references: [id])
+}
+
+model CustomerNote {
+  id         String   @id @default(uuid())
+  customerId String
+  agentId    String
+  content    String
+  createdAt  DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  agent    User     @relation("AgentNotes", fields: [agentId], references: [id])
+}

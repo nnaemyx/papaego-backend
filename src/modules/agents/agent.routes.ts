@@ -1,13 +1,14 @@
 import { Router } from "express";
 import { auth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/rbac.middleware";
-import { upload } from "../../middlewares/upload.middleware";
+import { uploadToCloudinary } from "../../middlewares/upload.middleware";
 import {
     createTrade,
     verifyCustomer,
     quoteTrade,
     sendToCustomer,
-    confirmPayout
+    confirmPayout,
+    cancelTrade
 } from "./agent.trade.controller";
 import {
     getDashboardStats,
@@ -26,6 +27,11 @@ import {
     updateDocumentStatus,
     deleteDocument
 } from "./agent.documents.controller";
+import {
+    getAgentTradeRequests,
+    rejectTradeRequest,
+    claimTradeRequest
+} from "./agent.request.controller";
 
 const router = Router();
 
@@ -40,7 +46,7 @@ import { getAgentProfile, updateAgentProfile, updateAgentPassword, uploadProfile
 router.get("/profile", getAgentProfile);
 router.put("/profile", updateAgentProfile);
 router.put("/profile/password", updateAgentPassword);
-router.post("/profile/avatar", upload.single("avatar"), uploadProfileAvatar);
+router.post("/profile/avatar", uploadToCloudinary.single("avatar"), uploadProfileAvatar);
 
 // Customers
 router.get("/customers", getAgentCustomers);
@@ -50,17 +56,23 @@ router.get("/customers/:id", getAgentCustomer);
 // Documents
 router.get("/documents", getAgentDocuments);
 router.get("/documents/:id", getAgentDocument);
-router.post("/documents", uploadAgentDocument);
+router.post("/documents", uploadToCloudinary.single("document"), uploadAgentDocument);
 router.patch("/documents/:id", updateDocumentStatus);
 router.delete("/documents/:id", deleteDocument);
+
+// Trade Requests
+router.get("/trade-requests", getAgentTradeRequests);
+router.patch("/trade-requests/:id/reject", rejectTradeRequest);
+router.patch("/trade-requests/:id/claim", claimTradeRequest);
 
 // Trades
 router.get("/trades", getAgentTrades);
 router.get("/trades/:id", getAgentTrade);
-router.post("/trades", upload.single("paymentProof"), createTrade);
+router.post("/trades", uploadToCloudinary.single("paymentProof"), createTrade);
 router.post("/trades/:id/verify-customer", verifyCustomer);
 router.post("/trades/:id/quote", quoteTrade);
 router.post("/trades/:id/send", sendToCustomer);
 router.post("/trades/:id/confirm-payout", confirmPayout);
+router.post("/trades/:id/cancel", cancelTrade);
 
 export default router;

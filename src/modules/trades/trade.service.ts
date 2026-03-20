@@ -1,7 +1,8 @@
-import { TradeStatus } from "@prisma/client";
+import { TradeStatus } from "../../generated/client";
 import { assertTransition } from "../../utils/stateMachine";
 import prisma from "../../config/db";
 import { getLockedRate } from "../fx/fx.service";
+import { sendTradeCompletionEmail } from "../../services/email.service";
 
 // Kept for backward compatibility if needed, or replace entirely. 
 // User snippet replaces it with quoteTrade, but the controller uses updateTradeStatus in some places.
@@ -11,7 +12,9 @@ import { getLockedRate } from "../fx/fx.service";
 // Let's add quoteTrade export.
 
 export async function updateTradeStatus(tradeId: string, newStatus: TradeStatus, actor: any) {
-  const trade = await prisma.trade.findUnique({ where: { id: tradeId } });
+  const trade = await prisma.trade.findUnique({
+    where: { id: tradeId },
+  });
 
   if (!trade) {
     throw new Error("Trade not found");
@@ -34,7 +37,35 @@ export async function updateTradeStatus(tradeId: string, newStatus: TradeStatus,
       ip: actor.ip || "127.0.0.1"
     }
   });
+
+  // Send trade completion email to customer
+  if (newStatus === "COMPLETED") {
+    try {
+      const customer = await prisma.customer.findUnique({
+        where: { id: trade.customerId },
+        include: {
+          user: { select: { email: true, firstName: true, lastName: true } }
+        }
+      });
+      const email = customer?.email || customer?.user?.email;
+      if (email) {
+        const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+        await sendTradeCompletionEmail({
+          email,
+          customerName: customer?.fullName || `${customer?.user?.firstName || ""} ${customer?.user?.lastName || ""}`.trim() || "Customer",
+          tradeId: `PE-${trade.id.slice(0, 5).toUpperCase()}`,
+          amount: trade.amount.toString(),
+          fromCurrency: trade.sendCurrency,
+          toCurrency: trade.receiveCurrency,
+          loginLink: `${frontendUrl}/customer/dashboard`,
+        });
+      }
+    } catch (emailError) {
+      console.error("Failed to send trade completion email:", emailError);
+    }
+  }
 }
+
 
 export async function quoteTrade(tradeId: string, actor: any) {
   const trade = await prisma.trade.findUnique({ where: { id: tradeId } });
