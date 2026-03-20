@@ -1,4 +1,4 @@
-import { TradeStatus } from "../../generated/client";
+import { TradeStatus } from "@prisma/client";
 import { assertTransition } from "../../utils/stateMachine";
 import prisma from "../../config/db";
 import { getLockedRate } from "../fx/fx.service";
