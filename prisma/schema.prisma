@@ -24,6 +24,7 @@ enum TradeStatus {
   SENT_TO_CUSTOMER
   CUSTOMER_CONFIRMED
   AWAITING_PAYMENT
+  PAYMENT_UPLOADED
   PAYMENT_CONFIRMED
   FLAGGED
   UNDER_REVIEW
@@ -181,6 +182,10 @@ model TradeRequest {
   supplierSector        String?
   supplierAddress       String?
 
+  fxRate          Decimal?
+  payoutAmount    Decimal?
+  quotedAt        DateTime?
+
   customer Customer @relation(fields: [customerId], references: [id])
   agent    User?    @relation("AgentTradeRequests", fields: [agentId], references: [id])
 }
@@ -189,7 +194,8 @@ model ChatMessage {
   id        String   @id @default(uuid())
   tradeId   String
   senderId  String
-  message   String
+  message   String?
+  imageUrl  String?
   role      String   // CUSTOMER, AGENT, ADMIN
   createdAt DateTime @default(now())
 
@@ -221,7 +227,7 @@ model Trade {
   id         String @id @default(uuid())
   agentId    String
   customerId String
-  countryId  String
+  countryId  String?
 
   tradeType       String   @default("BUY") // BUY, SELL
   sendCurrency    String
@@ -234,6 +240,11 @@ model Trade {
   createdAt DateTime    @default(now())
 
   // New fields for payment and payout details
+  paymentAccountName   String?
+  paymentAccountNumber String?
+  paymentBankName      String?
+  paymentAmount        Decimal?
+
   paymentMethod    String?
   paymentSource    String?
   payoutMethod     String?

@@ -40,6 +40,7 @@ import {
     approveTradeRequest,
     rejectTradeRequest,
     processTradeRequest,
+    deleteTradeRequest,
 } from "./admin.tradeRequest.controller";
 import { uploadTradeReceipt } from "./admin.receipt.controller";
 
@@ -79,6 +80,7 @@ router.patch("/trade-requests/:id/assign", assignAgentToRequest);
 router.patch("/trade-requests/:id/approve", approveTradeRequest);
 router.patch("/trade-requests/:id/reject", rejectTradeRequest);
 router.patch("/trade-requests/:id/process", processTradeRequest);
+router.delete("/trade-requests/:id", deleteTradeRequest);
 
 // ── Suppliers ────────────────────────────────────────────────────────────────
 router.get("/suppliers/by-customer/:customerId", getSuppliersByCustomer);

@@ -137,7 +137,7 @@ export async function quoteTrade(req: Request, res: Response) {
     const fxRate = await getLockedRate(
         trade.sendCurrency,
         trade.receiveCurrency,
-        trade.countryId
+        trade.countryId || ""
     );
 
     await prisma.trade.update({
@@ -149,7 +149,10 @@ export async function quoteTrade(req: Request, res: Response) {
         }
     });
 
-    // Notify customer
+    // Notify customer and admins
+    const admins = await prisma.user.findMany({ where: { role: 'ADMIN' }, select: { id: true, email: true } });
+    const adminEmails = admins.map(a => a.email).filter((e): e is string => !!e);
+
     if (trade.customer?.email) {
         await sendSupplierConfirmedEmail({
             customerEmail: trade.customer.email,
@@ -157,12 +160,12 @@ export async function quoteTrade(req: Request, res: Response) {
             tradeId: trade.id.slice(0, 8).toUpperCase(),
             amount: trade.amount.toString(),
             currency: trade.sendCurrency,
-            dashboardLink: `${process.env.FRONTEND_URL}/customer/trades/${trade.id}`
+            dashboardLink: `${process.env.FRONTEND_URL}/customer/trades/${trade.id}`,
+            adminEmails
         });
     }
 
-    // Notify admins
-    const admins = await prisma.user.findMany({ where: { role: 'ADMIN' } });
+    // Notify admins via in-app
     for (const admin of admins) {
         await prisma.notification.create({
             data: {
@@ -203,7 +206,10 @@ export async function sendToCustomer(req: Request, res: Response) {
         data: { status: "SENT_TO_CUSTOMER" }
     });
 
-    // Notify customer (if not already notified by QUOTED status, or as a follow up)
+    // Notify customer and admins
+    const admins = await prisma.user.findMany({ where: { role: 'ADMIN' }, select: { id: true, email: true } });
+    const adminEmails = admins.map(a => a.email).filter((e): e is string => !!e);
+
     if (trade.customer?.email) {
         await sendSupplierConfirmedEmail({
             customerEmail: trade.customer.email,
@@ -211,7 +217,20 @@ export async function sendToCustomer(req: Request, res: Response) {
             tradeId: trade.id.slice(0, 8).toUpperCase(),
             amount: trade.amount.toString(),
             currency: trade.sendCurrency,
-            dashboardLink: `${process.env.FRONTEND_URL}/customer/trades/${trade.id}`
+            dashboardLink: `${process.env.FRONTEND_URL}/customer/trades/${trade.id}`,
+            adminEmails
+        });
+    }
+
+    // Notify admins via in-app
+    for (const admin of admins) {
+        await prisma.notification.create({
+            data: {
+                userId: admin.id,
+                title: 'Agent Sent Trade to Customer',
+                message: `Agent has sent the trade details for trade #${trade.id.slice(0, 8).toUpperCase()} to the customer.`,
+                type: 'INFO',
+            }
         });
     }
 
@@ -249,7 +268,10 @@ export async function confirmPayout(req: Request, res: Response) {
             data: { status: "COMPLETED" }
         });
 
-        // Notify Customer
+        // Notify Customer and Admins
+        const admins = await prisma.user.findMany({ where: { role: 'ADMIN' }, select: { id: true, email: true } });
+        const adminEmails = admins.map(a => a.email).filter((e): e is string => !!e);
+
         if (trade.customer?.email) {
             await sendTradeCompletionEmail({
                 email: trade.customer.email,
@@ -258,7 +280,20 @@ export async function confirmPayout(req: Request, res: Response) {
                 amount: trade.amount.toString(),
                 fromCurrency: trade.sendCurrency,
                 toCurrency: trade.receiveCurrency,
-                loginLink: `${process.env.FRONTEND_URL}/login`
+                loginLink: `${process.env.FRONTEND_URL}/login`,
+                adminEmails
+            });
+        }
+
+        // Notify Admins via in-app
+        for (const admin of admins) {
+            await prisma.notification.create({
+                data: {
+                    userId: admin.id,
+                    title: 'Agent Confirmed Payout',
+                    message: `Agent has confirmed payout and completed trade #${trade.id.slice(0, 8).toUpperCase()}.`,
+                    type: 'SUCCESS',
+                }
             });
         }
 
@@ -301,14 +336,30 @@ export async function cancelTrade(req: Request, res: Response) {
             data: { status: "CANCELLED" }
         });
 
-        // Notify Customer
+        // Notify Customer and Admins
+        const admins = await prisma.user.findMany({ where: { role: 'ADMIN' }, select: { id: true, email: true } });
+        const adminEmails = admins.map(a => a.email).filter((e): e is string => !!e);
+
         if (trade.customer?.email) {
             await sendTradeCancelledEmail({
                 customerEmail: trade.customer.email,
                 customerName: trade.customer.fullName,
                 tradeId: trade.id.slice(0, 8).toUpperCase(),
                 reason,
-                dashboardLink: `${process.env.FRONTEND_URL}/login`
+                dashboardLink: `${process.env.FRONTEND_URL}/login`,
+                adminEmails
+            });
+        }
+
+        // Notify Admins via in-app
+        for (const admin of admins) {
+            await prisma.notification.create({
+                data: {
+                    userId: admin.id,
+                    title: 'Agent Cancelled Trade',
+                    message: `Agent has cancelled trade #${trade.id.slice(0, 8).toUpperCase()}. Reason: ${reason || 'No reason provided'}.`,
+                    type: 'WARNING',
+                }
             });
         }
 

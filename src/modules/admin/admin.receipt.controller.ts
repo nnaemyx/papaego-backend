@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { createNotification } from "../notifications/notification.service";
+import { sendTradeCompletedWithReceiptEmail } from "../../services/email.service";
 
 /**
  * PATCH /api/admin/transactions/:id/receipt
@@ -15,7 +16,14 @@ export async function uploadTradeReceipt(req: Request, res: Response) {
         const trade = await prisma.trade.findUnique({
             where: { id },
             include: {
-                customer: { select: { id: true, userId: true, fullName: true } },
+                customer: { 
+                    select: { 
+                        id: true, 
+                        userId: true, 
+                        fullName: true,
+                        user: { select: { email: true } }
+                    } 
+                },
             },
         });
 
@@ -27,17 +35,28 @@ export async function uploadTradeReceipt(req: Request, res: Response) {
 
         await (prisma.trade as any).update({
             where: { id },
-            data: { receiptUrl },
+            data: { 
+                receiptUrl,
+                status: "COMPLETED"
+            },
         });
 
         // Notify the customer
         if ((trade as any).customer?.userId) {
             await createNotification(
                 (trade as any).customer.userId,
-                "Invoice / Receipt Ready",
-                "Admin has uploaded a receipt for your trade. Please log in to view it.",
-                "INFO"
+                "Trade Completed",
+                "Admin has uploaded a payout receipt for your trade. Please log in to view it.",
+                "SUCCESS"
             );
+            
+            await sendTradeCompletedWithReceiptEmail({
+                customerEmail: trade.customer.user?.email || "",
+                customerName: trade.customer.fullName,
+                tradeId: trade.id.slice(0, 8).toUpperCase(),
+                receiptUrl,
+                dashboardLink: `${process.env.FRONTEND_URL || "http://localhost:3000"}/customer/trades/${trade.id}`,
+            });
         }
 
         await prisma.auditLog.create({

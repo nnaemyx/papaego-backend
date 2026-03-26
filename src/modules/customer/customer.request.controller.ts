@@ -35,29 +35,45 @@ export async function createTradeRequest(req: Request, res: Response) {
         }
 
         if (businessName && bankName && accountNumber) {
-            const existingLink = await prisma.supplierCustomer.findFirst({
-                where: {
-                    customerId,
-                    supplier: { bankName, accountNumber }
-                }
-            });
-            if (!existingLink) {
-                await prisma.supplier.create({
-                    data: {
-                        businessName,
-                        bankName,
-                        accountNumber,
-                        sector: sector || "Other",
-                        address: address || null,
-                        linkedCustomers: {
-                            create: { customerId }
-                        }
+            try {
+                const existingLink = await prisma.supplierCustomer.findFirst({
+                    where: {
+                        customerId,
+                        supplier: { bankName, accountNumber }
                     }
                 });
+                if (!existingLink) {
+                    // Check if a supplier with this bank+account already exists (avoid duplicates)
+                    const existingSupplier = await prisma.supplier.findFirst({
+                        where: { bankName, accountNumber }
+                    });
+                    if (existingSupplier) {
+                        // Just link this customer to the existing supplier
+                        await prisma.supplierCustomer.create({
+                            data: { supplierId: existingSupplier.id, customerId }
+                        });
+                    } else {
+                        await prisma.supplier.create({
+                            data: {
+                                businessName,
+                                bankName,
+                                accountNumber,
+                                sector: sector || "Other",
+                                address: address || null,
+                                linkedCustomers: {
+                                    create: { customerId }
+                                }
+                            }
+                        });
+                    }
+                }
+            } catch (supplierErr) {
+                // Non-fatal — supplier linking fails silently, trade request still goes through
+                console.error("Supplier creation/linking failed (non-fatal):", supplierErr);
             }
         }
 
-        const tradeRequest = await prisma.tradeRequest.create({
+        const tradeRequest = await (prisma.tradeRequest as any).create({
             data: {
                 customerId,
                 agentId: agentId || null,
@@ -94,7 +110,8 @@ export async function createTradeRequest(req: Request, res: Response) {
             )
         );
 
-        // Also notify agent via email if specifically assigned
+        // Also notify agent and admins via email
+        const adminEmails = admins.map(a => a.email).filter((e): e is string => !!e);
         if ((tradeRequest as any).agent?.email) {
             await sendTradeInitiatedEmail({
                 agentEmail: (tradeRequest as any).agent.email,
@@ -103,6 +120,7 @@ export async function createTradeRequest(req: Request, res: Response) {
                 amount: amount.toString(),
                 currency: sendCurrency,
                 tradeId: (tradeRequest as any).id.slice(0, 8).toUpperCase(),
+                adminEmails,
             });
         }
 
@@ -120,12 +138,24 @@ export async function createTradeRequest(req: Request, res: Response) {
 export async function getCustomerTradeRequests(req: Request, res: Response) {
     try {
         const customerId = (req as any).user.customer?.id;
-        const requests = await prisma.tradeRequest.findMany({
-            where: { customerId },
-            orderBy: { createdAt: "desc" },
-        });
-        res.json(requests);
+        const { page = 1, limit = 20 } = req.query;
+
+        const skip = (Number(page) - 1) * Number(limit);
+        const take = Number(limit);
+
+        const [requests, total] = await Promise.all([
+            prisma.tradeRequest.findMany({
+                where: { customerId },
+                orderBy: { createdAt: "desc" },
+                skip,
+                take,
+            }),
+            prisma.tradeRequest.count({ where: { customerId } })
+        ]);
+
+        res.json({ requests, total, page: Number(page), limit: Number(limit) });
     } catch (error) {
+        console.error("Error fetching customer trade requests:", error);
         res.status(500).json({ error: "Failed to fetch trade requests" });
     }
 }

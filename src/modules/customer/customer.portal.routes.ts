@@ -7,6 +7,7 @@ import { createTradeRequest, getCustomerTradeRequests } from "./customer.request
 import { upsertBankDetails, getBankDetails } from "./customer.bank.controller";
 import { uploadToCloudinary } from "../../middlewares/upload.middleware";
 import { getSuppliers } from "./customer.supplier.controller";
+import { sendReceiptUploadedEmail } from "../../services/email.service";
 
 const router = Router();
 
@@ -178,6 +179,10 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
             payoutAmount: trade.payoutAmount,
             paymentProofUrl: trade.paymentProofUrl,
             lockedUntil: trade.lockedUntil,
+            paymentAccountName: trade.paymentAccountName,
+            paymentAccountNumber: trade.paymentAccountNumber,
+            paymentBankName: trade.paymentBankName,
+            paymentAmount: trade.paymentAmount?.toString() || null,
             createdAt: trade.createdAt.toISOString(),
             timeline: auditLogs.map((log) => ({
                 action: log.action,
@@ -187,6 +192,58 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
     } catch (error) {
         console.error("Error fetching trade detail:", error);
         res.status(500).json({ error: "Failed to fetch trade" });
+    }
+});
+
+/**
+ * PATCH /customer/portal/trades/:id/upload-receipt
+ */
+router.patch("/trades/:id/upload-receipt", uploadToCloudinary.single("receipt"), async (req: Request, res: Response) => {
+    try {
+        const customer = (req as any).user.customer;
+        const file = req.file;
+        if (!file) return res.status(400).json({ error: "No receipt file provided" });
+
+        const trade = await prisma.trade.findFirst({
+            where: { id: req.params.id, customerId: customer.id },
+            include: { agent: true }
+        });
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        const updatedTrade = await prisma.trade.update({
+            where: { id: trade.id },
+            data: {
+                paymentProofUrl: file.path,
+                status: "PAYMENT_UPLOADED"
+            }
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: "CUSTOMER",
+                action: "PAYMENT_RECEIPT_UPLOADED",
+                entity: "Trade",
+                entityId: trade.id,
+                ip: req.ip || "127.0.0.1",
+            },
+        });
+
+        // Notify Admin
+        const adminUser = await prisma.user.findFirst({ where: { role: "ADMIN" } });
+        if (adminUser && adminUser.email) {
+            await sendReceiptUploadedEmail({
+                adminEmail: adminUser.email,
+                customerName: `${customer.firstName || ''} ${customer.lastName || ''}`.trim() || 'Customer',
+                tradeId: trade.id.slice(0, 8).toUpperCase(),
+                dashboardLink: `${process.env.FRONTEND_URL || "http://localhost:3000"}/admin/transactions/${trade.id}`,
+            });
+        }
+
+        res.json(updatedTrade);
+    } catch (error) {
+        console.error("Error uploading receipt:", error);
+        res.status(500).json({ error: "Failed to upload receipt" });
     }
 });
 

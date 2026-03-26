@@ -77,7 +77,7 @@ export async function quoteTrade(tradeId: string, actor: any) {
   const fxRate = await getLockedRate(
     trade.sendCurrency,
     trade.receiveCurrency,
-    trade.countryId
+    trade.countryId || ""
   );
 
   await prisma.trade.update({

@@ -344,29 +344,98 @@ export async function approveOverride(req: Request, res: Response) {
 // Dashboard Statistics
 export async function getDashboardStats(req: Request, res: Response) {
     try {
-        const totalTransactions = await prisma.trade.count();
-        const activeAgents = await prisma.user.count({
-            where: { role: "AGENT", isActive: true }
-        });
-        const pendingReviews = await prisma.complianceFlag.count({
-            where: {
-                createdAt: {
-                    gte: new Date(new Date().setHours(0, 0, 0, 0))
-                }
-            }
+        // --- Basic counts ---
+        const [totalTransactions, activeAgents] = await Promise.all([
+            prisma.trade.count(),
+            prisma.user.count({ where: { role: "AGENT", isActive: true } }),
+        ]);
+
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+
+        // --- All trades (lightweight) ---
+        const allTrades = await prisma.trade.findMany({
+            select: { id: true, status: true, amount: true, sendCurrency: true, createdAt: true },
         });
 
-        // Calculate trade volume
-        const trades = await prisma.trade.findMany({
-            select: { amount: true }
+        const total = allTrades.length || 1; // avoid /0
+        const tradeVolume = allTrades.reduce((sum, t) => sum + Number(t.amount), 0);
+
+        // --- Trade health breakdown (%) ---
+        const completedStatuses = ["COMPLETED"];
+        const inProgressStatuses = ["AWAITING_PAYMENT", "PAYMENT_UPLOADED", "PAYMENT_CONFIRMED", "CUSTOMER_CONFIRMED", "SENT_TO_CUSTOMER", "CUSTOMER_VERIFIED"];
+        const pendingStatuses = ["INITIATED", "QUOTED", "REQUESTED"];
+        const failedStatuses = ["CANCELLED", "EXPIRED", "FLAGGED", "UNDER_REVIEW"];
+
+        const completedCount = allTrades.filter(t => completedStatuses.includes(t.status)).length;
+        const inProgressCount = allTrades.filter(t => inProgressStatuses.includes(t.status)).length;
+        const pendingCount = allTrades.filter(t => pendingStatuses.includes(t.status)).length;
+        const failedCount = allTrades.filter(t => failedStatuses.includes(t.status)).length;
+
+        const tradeHealth = {
+            completed: Math.round((completedCount / total) * 100),
+            inProgress: Math.round((inProgressCount / total) * 100),
+            pending: Math.round((pendingCount / total) * 100),
+            failed: Math.round((failedCount / total) * 100),
+        };
+
+        // --- Risk & Compliance ---
+        const highValueAmount = 1_000_000; // NGN
+        const highValueCount = allTrades.filter(t => Number(t.amount) >= highValueAmount).length;
+
+        const [flaggedTodayCount, flaggedUnderReview] = await Promise.all([
+            prisma.complianceFlag.count({ where: { createdAt: { gte: todayStart } } }),
+            prisma.trade.count({ where: { status: "UNDER_REVIEW" } }),
+        ]);
+
+        // Flagged customers: distinct customers who have trades with compliance flags
+        const flaggedTradeIds = await prisma.complianceFlag.findMany({ select: { tradeId: true } });
+        const flaggedTradeIdSet = [...new Set(flaggedTradeIds.map(f => f.tradeId))];
+        const flaggedCustomerIds = flaggedTradeIdSet.length > 0
+            ? await prisma.trade.findMany({
+                where: { id: { in: flaggedTradeIdSet } },
+                select: { customerId: true },
+              }).then(rows => new Set(rows.map(r => r.customerId)).size)
+            : 0;
+
+        const risk = {
+            highValueTradesCount: highValueCount,
+            flaggedTodayCount,
+            flaggedUnderReview,
+            flaggedCustomersCount: flaggedCustomerIds,
+        };
+
+        // --- Financial performance ---
+        // Most traded send currency
+        const currencyCount: Record<string, number> = {};
+        allTrades.forEach(t => {
+            currencyCount[t.sendCurrency] = (currencyCount[t.sendCurrency] || 0) + 1;
         });
-        const tradeVolume = trades.reduce((sum, trade) => sum + Number(trade.amount), 0);
+        const mostTradedCurrency = Object.entries(currencyCount).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "N/A";
+
+        // Avg days to complete (from createdAt, for completed trades — proxy since we don't store completedAt)
+        // We look at how old completed trades are on average
+        const completedTrades = allTrades.filter(t => t.status === "COMPLETED");
+        let avgProcessingMinutes = 0;
+        if (completedTrades.length > 0) {
+            const now = Date.now();
+            const totalMs = completedTrades.reduce((sum, t) => sum + (now - new Date(t.createdAt).getTime()), 0);
+            avgProcessingMinutes = Math.round(totalMs / completedTrades.length / 60_000);
+        }
+
+        const pendingReviews = flaggedTodayCount; // consistent with existing UI usage
 
         res.json({
             totalTransactions,
             tradeVolume,
             activeAgents,
-            pendingReviews
+            pendingReviews,
+            tradeHealth,
+            risk,
+            financial: {
+                mostTradedCurrency,
+                avgProcessingMinutes,
+            },
         });
     } catch (error) {
         console.error("Error fetching dashboard stats:", error);

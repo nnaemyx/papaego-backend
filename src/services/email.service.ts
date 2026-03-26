@@ -229,6 +229,7 @@ interface TradeCompletionParams {
   fromCurrency: string;
   toCurrency: string;
   loginLink: string;
+  adminEmails?: string[];
 }
 
 /**
@@ -242,11 +243,13 @@ export async function sendTradeCompletionEmail({
   fromCurrency,
   toCurrency,
   loginLink,
+  adminEmails,
 }: TradeCompletionParams) {
   try {
+    const recipients = [email, ...(adminEmails || [])];
     const { data, error } = await resend.emails.send({
       from: 'PapaEgo <transactions@papaego.com>',
-      to: email,
+      to: recipients,
       subject: `Your PapaEgo Trade #${tradeId} is Complete! 🎉`,
       text: `
 Hello ${customerName},
@@ -340,6 +343,7 @@ interface TradeInitiatedParams {
   currency: string;
   tradeId: string;
   dashboardLink?: string;
+  adminEmails?: string[];
 }
 
 /**
@@ -353,16 +357,17 @@ export async function sendTradeInitiatedEmail({
   currency,
   tradeId,
   dashboardLink,
+  adminEmails,
 }: TradeInitiatedParams) {
   try {
     await resend.emails.send({
       from: 'PapaEgo <requests@papaego.com>',
-      to: agentEmail,
+      to: [agentEmail, ...(adminEmails || [])],
       subject: `New Trade Request: ${customerName} initiated a trade`,
       html: `
         <div style="font-family: sans-serif; padding: 20px;">
           <h2>New Trade Request 📥</h2>
-          <p>Hello ${agentName},</p>
+          <p>Hello ${agentName || 'Agent'},</p>
           <p><strong>${customerName}</strong> has just initiated a new trade request assigned to you.</p>
           <p><strong>Amount:</strong> ${amount} ${currency}</p>
           <div style="margin: 20px 0;">
@@ -384,6 +389,7 @@ interface SupplierConfirmedParams {
   amount: string;
   currency: string;
   dashboardLink: string;
+  adminEmails?: string[];
 }
 
 /**
@@ -396,11 +402,12 @@ export async function sendSupplierConfirmedEmail({
   amount,
   currency,
   dashboardLink,
+  adminEmails,
 }: SupplierConfirmedParams) {
   try {
     await resend.emails.send({
       from: 'PapaEgo <updates@papaego.com>',
-      to: customerEmail,
+      to: [customerEmail, ...(adminEmails || [])],
       subject: `Action Required: Quote Ready for Trade #${tradeId}`,
       html: `
         <div style="font-family: sans-serif; padding: 20px;">
@@ -428,17 +435,20 @@ export async function sendTradeCancelledEmail({
   tradeId,
   reason,
   dashboardLink,
+  adminEmails,
 }: {
   customerEmail: string;
   customerName: string;
   tradeId: string;
   reason?: string;
   dashboardLink: string;
+  adminEmails?: string[];
 }) {
+    const recipients = [customerEmail, ...(adminEmails || [])];
   try {
     await resend.emails.send({
       from: 'PapaEgo <support@papaego.com>',
-      to: customerEmail,
+      to: recipients,
       subject: `Update on your Trade #${tradeId}`,
       html: `
         <div style="font-family: sans-serif; padding: 20px;">
@@ -456,5 +466,132 @@ export async function sendTradeCancelledEmail({
     });
   } catch (error) {
     console.error("Error sending trade cancellation email:", error);
+  }
+}
+
+/**
+ * Notifies a customer with the admin's payment account details
+ */
+export async function sendPaymentDetailsEmail({
+  customerEmail,
+  customerName,
+  tradeId,
+  amount,
+  currency,
+  paymentBankName,
+  paymentAccountName,
+  paymentAccountNumber,
+  dashboardLink,
+}: {
+  customerEmail: string;
+  customerName: string;
+  tradeId: string;
+  amount: string;
+  currency: string;
+  paymentBankName: string;
+  paymentAccountName: string;
+  paymentAccountNumber: string;
+  dashboardLink: string;
+}) {
+  try {
+    await resend.emails.send({
+      from: 'PapaEgo <payments@papaego.com>',
+      to: customerEmail,
+      subject: `Action Required: Pay for Trade #${tradeId}`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px;">
+          <h2>Payment Details Ready 💳</h2>
+          <p>Hello ${customerName},</p>
+          <p>Your trade <strong>#${tradeId}</strong> has been processed. Please make a payment of <strong>${amount} ${currency}</strong> to the following account:</p>
+          <div style="background: #f7f8f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 0 0 10px 0;"><strong>Bank Name:</strong> ${paymentBankName}</p>
+            <p style="margin: 0 0 10px 0;"><strong>Account Name:</strong> ${paymentAccountName}</p>
+            <p style="margin: 0;"><strong>Account Number:</strong> ${paymentAccountNumber}</p>
+          </div>
+          <p>After making the transfer, please click the button below to upload your payment receipt.</p>
+          <div style="margin: 20px 0;">
+            <a href="${dashboardLink}" style="background: #c9a227; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Upload Receipt</a>
+          </div>
+        </div>
+      `
+    });
+  } catch (error) {
+    console.error("Error sending payment details email:", error);
+  }
+}
+
+/**
+ * Notifies admins that a customer has uploaded their payment receipt
+ */
+export async function sendReceiptUploadedEmail({
+  adminEmail,
+  customerName,
+  tradeId,
+  dashboardLink,
+}: {
+  adminEmail: string;
+  customerName: string;
+  tradeId: string;
+  dashboardLink: string;
+}) {
+  try {
+    await resend.emails.send({
+      from: 'PapaEgo <alerts@papaego.com>',
+      to: adminEmail,
+      subject: `Receipt Uploaded for Trade #${tradeId}`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px;">
+          <h2>Payment Receipt Uploaded 🧾</h2>
+          <p>Admin,</p>
+          <p><strong>${customerName}</strong> has uploaded a payment receipt for trade <strong>#${tradeId}</strong>.</p>
+          <p>Please review the receipt and complete the trade by sending the final payout receipt to the customer.</p>
+          <div style="margin: 20px 0;">
+            <a href="${dashboardLink}" style="background: #012333; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Review Trade</a>
+          </div>
+        </div>
+      `
+    });
+  } catch (error) {
+    console.error("Error sending receipt uploaded email:", error);
+  }
+}
+
+/**
+ * Notifies customer that trade is complete with final payout receipt attached/linked
+ */
+export async function sendTradeCompletedWithReceiptEmail({
+  customerEmail,
+  customerName,
+  tradeId,
+  receiptUrl,
+  dashboardLink,
+}: {
+  customerEmail: string;
+  customerName: string;
+  tradeId: string;
+  receiptUrl: string;
+  dashboardLink: string;
+}) {
+  try {
+    await resend.emails.send({
+      from: 'PapaEgo <updates@papaego.com>',
+      to: customerEmail,
+      subject: `Trade Completed! View Receipt for #${tradeId}`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px;">
+          <h2>Trade Complete ✅</h2>
+          <p>Hello ${customerName},</p>
+          <p>Your trade <strong>#${tradeId}</strong> has been successfully completed.</p>
+          <p>The payout has been processed and your transaction receipt is available.</p>
+          <div style="margin: 20px 0; display: flex; gap: 10px;">
+            <a href="${receiptUrl}" target="_blank" style="background: #27ae60; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">View Receipt</a>
+            <a href="${dashboardLink}" style="background: #c9a227; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">View Trade in Dashboard</a>
+          </div>
+          <p>Thank you for trading with PapaEgo!</p>
+        </div>
+      `
+    });
+  } catch (error) {
+    console.error("Error sending trade completed email:", error);
   }
 }

@@ -7,12 +7,12 @@ import prisma from "../../config/db";
  */
 export async function sendMessage(req: Request, res: Response) {
     try {
-        const { tradeId, message } = req.body;
+        const { tradeId, message, imageUrl } = req.body;
         const userId = (req as any).user.id;
         const role = (req as any).user.role;
 
-        if (!tradeId || !message) {
-            return res.status(400).json({ error: "Trade ID and message are required" });
+        if (!tradeId || (!message && !imageUrl)) {
+            return res.status(400).json({ error: "Trade ID and message (or image) are required" });
         }
 
         // Verify trade existence
@@ -26,6 +26,7 @@ export async function sendMessage(req: Request, res: Response) {
                 tradeId,
                 senderId: userId,
                 message,
+                imageUrl,
                 role
             }
         });

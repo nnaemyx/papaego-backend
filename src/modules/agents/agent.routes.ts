@@ -30,7 +30,8 @@ import {
 import {
     getAgentTradeRequests,
     rejectTradeRequest,
-    claimTradeRequest
+    claimTradeRequest,
+    setTradeRequestRate
 } from "./agent.request.controller";
 
 const router = Router();
@@ -64,6 +65,7 @@ router.delete("/documents/:id", deleteDocument);
 router.get("/trade-requests", getAgentTradeRequests);
 router.patch("/trade-requests/:id/reject", rejectTradeRequest);
 router.patch("/trade-requests/:id/claim", claimTradeRequest);
+router.patch("/trade-requests/:id/set-rate", setTradeRequestRate);
 
 // Trades
 router.get("/trades", getAgentTrades);

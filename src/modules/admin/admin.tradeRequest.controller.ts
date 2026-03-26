@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { createNotification } from "../notifications/notification.service";
+import { sendPaymentDetailsEmail } from "../../services/email.service";
 
 /**
  * GET /api/admin/trade-requests
@@ -8,7 +9,7 @@ import { createNotification } from "../notifications/notification.service";
  */
 export async function getAdminTradeRequests(req: Request, res: Response) {
     try {
-        const { status } = req.query;
+        const { status, page = 1, limit = 20 } = req.query;
 
         const where: any = {};
         if (status && status !== "ALL") {
@@ -20,28 +21,36 @@ export async function getAdminTradeRequests(req: Request, res: Response) {
             }
         }
 
-        const requests = await prisma.tradeRequest.findMany({
-            where,
-            include: {
-                customer: {
-                    select: {
-                        id: true,
-                        fullName: true,
-                        email: true,
-                        phone: true,
+        const skip = (Number(page) - 1) * Number(limit);
+        const take = Number(limit);
+
+        const [requests, total] = await Promise.all([
+            prisma.tradeRequest.findMany({
+                where,
+                include: {
+                    customer: {
+                        select: {
+                            id: true,
+                            fullName: true,
+                            email: true,
+                            phone: true,
+                        },
+                    },
+                    agent: {
+                        select: {
+                            id: true,
+                            firstName: true,
+                            lastName: true,
+                            email: true,
+                        },
                     },
                 },
-                agent: {
-                    select: {
-                        id: true,
-                        firstName: true,
-                        lastName: true,
-                        email: true,
-                    },
-                },
-            },
-            orderBy: { createdAt: "desc" },
-        });
+                orderBy: { createdAt: "desc" },
+                skip,
+                take,
+            }),
+            prisma.tradeRequest.count({ where })
+        ]);
 
         const formatted = requests.map((r: any) => ({
             id: r.id,
@@ -52,6 +61,9 @@ export async function getAdminTradeRequests(req: Request, res: Response) {
             tradeType: r.tradeType,
             status: r.status,
             createdAt: r.createdAt,
+            fxRate: r.fxRate ? r.fxRate.toString() : null,
+            payoutAmount: r.payoutAmount ? r.payoutAmount.toString() : null,
+            quotedAt: r.quotedAt,
             customer: {
                 id: r.customer.id,
                 firstName: r.customer.fullName.split(" ")[0] || "",
@@ -76,7 +88,7 @@ export async function getAdminTradeRequests(req: Request, res: Response) {
             },
         }));
 
-        res.json(formatted);
+        res.json({ requests: formatted, total, page: Number(page), limit: Number(limit) });
     } catch (error) {
         console.error("Error fetching admin trade requests:", error);
         res.status(500).json({ error: "Failed to fetch trade requests" });
@@ -208,6 +220,7 @@ export async function rejectTradeRequest(req: Request, res: Response) {
 export async function processTradeRequest(req: Request, res: Response) {
     try {
         const { id } = req.params;
+        const { paymentAccountName, paymentAccountNumber, paymentBankName, paymentAmount } = req.body;
 
         const request = await prisma.tradeRequest.findUnique({
             where: { id },
@@ -226,28 +239,35 @@ export async function processTradeRequest(req: Request, res: Response) {
             return res.status(400).json({ error: "No agent available to process this request" });
         }
 
-        // Resolve countryId
+        // Resolve countryId (optional — Trade.countryId is now nullable)
         const firstCountry = await prisma.country.findFirst();
-        const countryId = firstCountry?.id || "ng";
+        const countryId = firstCountry?.id ?? null;
 
         // Create the trade
-        const trade = await prisma.trade.create({
+        const trade = await (prisma.trade as any).create({
             data: {
                 agentId,
                 customerId: request.customerId,
                 countryId,
-                tradeType: request.tradeType,
+                tradeType: request.tradeType || "BUY",
                 sendCurrency: request.sendCurrency,
                 receiveCurrency: request.receiveCurrency,
                 amount: request.amount,
-                status: "INITIATED",
+                fxRate: (request as any).fxRate ?? null,
+                payoutAmount: (request as any).payoutAmount ? String((request as any).payoutAmount) : null,
                 tradeRequestId: request.id,
                 // Copy supplier details from request
-                supplierBusinessName: request.supplierBusinessName,
-                supplierBankName: request.supplierBankName,
-                supplierAccountNumber: request.supplierAccountNumber,
-                supplierSector: request.supplierSector,
-                supplierAddress: request.supplierAddress,
+                supplierBusinessName: (request as any).supplierBusinessName ?? null,
+                supplierBankName: (request as any).supplierBankName ?? null,
+                supplierAccountNumber: (request as any).supplierAccountNumber ?? null,
+                supplierSector: (request as any).supplierSector ?? null,
+                supplierAddress: (request as any).supplierAddress ?? null,
+
+                paymentAccountName: paymentAccountName || null,
+                paymentAccountNumber: paymentAccountNumber || null,
+                paymentBankName: paymentBankName || null,
+                paymentAmount: paymentAmount ? Number(paymentAmount) : null,
+                status: paymentAccountNumber ? "AWAITING_PAYMENT" : "INITIATED",
             } as any,
         });
 
@@ -261,10 +281,24 @@ export async function processTradeRequest(req: Request, res: Response) {
         if (request.customer?.userId) {
             await createNotification(
                 request.customer.userId,
-                "Trade Created",
-                `Your trade request has been processed. Trade ID: ${trade.id.slice(0, 8).toUpperCase()}. Admin will contact you with payment details shortly.`,
+                "Payment Details Ready",
+                `Your trade #${trade.id.slice(0, 8).toUpperCase()} has been processed. Payment details have been provided.`,
                 "SUCCESS"
             );
+            
+            if (paymentAccountNumber && paymentAccountName && paymentBankName) {
+                await sendPaymentDetailsEmail({
+                    customerEmail: request.customer.email as string,
+                    customerName: request.customer.fullName as string,
+                    tradeId: trade.id.slice(0, 8).toUpperCase(),
+                    amount: paymentAmount ? String(paymentAmount) : String(request.amount),
+                    currency: request.sendCurrency,
+                    paymentBankName: String(paymentBankName),
+                    paymentAccountName: String(paymentAccountName),
+                    paymentAccountNumber: String(paymentAccountNumber),
+                    dashboardLink: `${process.env.FRONTEND_URL || "http://localhost:3000"}/customer/trades/${trade.id}`,
+                });
+            }
         }
 
         await prisma.auditLog.create({
@@ -316,6 +350,10 @@ export async function getAdminTradeRequest(req: Request, res: Response) {
                 fxRate: true,
                 payoutAmount: true,
                 receiptUrl: true,
+                paymentProofUrl: true,
+                paymentBankName: true,
+                paymentAccountNumber: true,
+                paymentAccountName: true,
                 createdAt: true,
                 agentId: true,
                 agent: { select: { id: true, firstName: true, lastName: true } },
@@ -331,6 +369,9 @@ export async function getAdminTradeRequest(req: Request, res: Response) {
             tradeType: request.tradeType,
             status: request.status,
             createdAt: request.createdAt,
+            fxRate: (request as any).fxRate ? (request as any).fxRate.toString() : null,
+            payoutAmount: (request as any).payoutAmount ? (request as any).payoutAmount.toString() : null,
+            quotedAt: (request as any).quotedAt,
             customer: {
                 id: (request as any).customer.id,
                 firstName: (request as any).customer.fullName.split(" ")[0] || "",
@@ -359,7 +400,11 @@ export async function getAdminTradeRequest(req: Request, res: Response) {
                     status: linkedTrade.status,
                     fxRate: linkedTrade.fxRate ? linkedTrade.fxRate.toString() : null,
                     payoutAmount: linkedTrade.payoutAmount,
-                    receiptUrl: linkedTrade.receiptUrl,
+                    receiptUrl: (linkedTrade as any).receiptUrl,
+                    paymentProofUrl: (linkedTrade as any).paymentProofUrl,
+                    paymentBankName: (linkedTrade as any).paymentBankName,
+                    paymentAccountNumber: (linkedTrade as any).paymentAccountNumber,
+                    paymentAccountName: (linkedTrade as any).paymentAccountName,
                     createdAt: linkedTrade.createdAt,
                     agent: linkedTrade.agent,
                 }
@@ -368,5 +413,35 @@ export async function getAdminTradeRequest(req: Request, res: Response) {
     } catch (error) {
         console.error("Error fetching trade request:", error);
         res.status(500).json({ error: "Failed to fetch trade request" });
+    }
+}
+
+/**
+ * DELETE /api/admin/trade-requests/:id
+ * Admin deletes a trade request
+ */
+export async function deleteTradeRequest(req: Request, res: Response) {
+    try {
+        const { id } = req.params;
+        const request = await prisma.tradeRequest.findUnique({ where: { id } });
+        if (!request) return res.status(404).json({ error: "Trade request not found" });
+
+        await prisma.tradeRequest.delete({ where: { id } });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: "ADMIN",
+                action: "TRADE_REQUEST_DELETED",
+                entity: "TradeRequest",
+                entityId: id,
+                ip: req.ip || "127.0.0.1",
+            },
+        });
+
+        res.json({ success: true, message: "Trade request deleted successfully" });
+    } catch (error) {
+        console.error("Error deleting trade request:", error);
+        res.status(500).json({ error: "Failed to delete trade request" });
     }
 }
