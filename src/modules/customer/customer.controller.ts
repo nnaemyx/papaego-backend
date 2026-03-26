@@ -146,7 +146,15 @@ export async function getCustomer(req: Request, res: Response) {
         const customer = await prisma.customer.findUnique({
             where: { id },
             include: {
-                user: true,
+                user: {
+                    select: {
+                        id: true,
+                        phone: true,
+                        email: true,
+                        isActive: true,
+                        createdAt: true
+                    }
+                },
                 notes: {
                     include: {
                         agent: {
@@ -268,6 +276,7 @@ export async function getCustomer(req: Request, res: Response) {
         res.json({
             ...customer,
             name: customer.fullName,
+            phone: customer.phone || customer.user?.phone || null,
             dateJoined: customer.createdAt.toISOString(),
             customerId: `PE-${customer.id.slice(0, 6).toUpperCase()}`,
             verificationStatus: customer.verified ? 'Verified' : 'Pending',

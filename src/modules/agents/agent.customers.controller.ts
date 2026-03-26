@@ -109,8 +109,16 @@ export async function getAgentCustomer(req: Request, res: Response) {
             name: customer.fullName,
             email: customer.email || 'N/A',
             phone: customer.phone || 'N/A',
+            dateJoined: customer.createdAt.toISOString(),
             joinDate: new Date(customer.createdAt).toLocaleDateString('en-GB'),
+            totalTransactions: tradesCount,
             totalTrades: tradesCount,
+            activityLevel: tradesCount > 10 ? 'High' : tradesCount > 4 ? 'Medium' : 'Low',
+            recentTrades: await prisma.trade.findMany({
+                where: { customerId: customer.id },
+                take: 5,
+                orderBy: { createdAt: 'desc' }
+            }),
             totalVolume: '$0',
             verificationStatus: customer.verified ? 'Verified' : 'Pending',
             customerType: 'Individual',

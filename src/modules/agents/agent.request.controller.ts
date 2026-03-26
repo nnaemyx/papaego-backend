@@ -8,12 +8,17 @@ import prisma from "../../config/db";
 export async function getAgentTradeRequests(req: Request, res: Response) {
     try {
         const agentId = (req as any).user.id;
-        const { status = "PENDING" } = req.query;
+        const { status } = req.query;
+
+        let statusQuery: any = status || "PENDING";
+        if (statusQuery === "PENDING") {
+            statusQuery = { in: ["PENDING", "ASSIGNED"] };
+        }
 
         const requests = await prisma.tradeRequest.findMany({
             where: { 
                 OR: [
-                    { agentId, status: status as string },
+                    { agentId, status: statusQuery },
                     { status: "POOL" } // Requests in the global queue
                 ]
             },

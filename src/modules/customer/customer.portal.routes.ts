@@ -6,6 +6,7 @@ import { customerSignup, uploadCustomerDocument } from "./customer.signup.contro
 import { createTradeRequest, getCustomerTradeRequests } from "./customer.request.controller";
 import { upsertBankDetails, getBankDetails } from "./customer.bank.controller";
 import { uploadToCloudinary } from "../../middlewares/upload.middleware";
+import { getSuppliers } from "./customer.supplier.controller";
 
 const router = Router();
 
@@ -95,6 +96,9 @@ router.get("/trade-requests", getCustomerTradeRequests);
 // --- Bank Details ---
 router.post("/bank-details", upsertBankDetails);
 router.get("/bank-details", getBankDetails);
+
+// --- Suppliers ---
+router.get("/suppliers", getSuppliers);
 
 /**
  * GET /customer/portal/trades

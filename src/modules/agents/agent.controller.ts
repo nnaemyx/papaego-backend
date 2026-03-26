@@ -15,11 +15,11 @@ export async function getDashboardStats(req: Request, res: Response) {
         });
 
         // Calculate stats
-        const activeTrades = trades.filter(t => 
+        const activeTrades = trades.filter(t =>
             !['COMPLETED', 'CANCELLED', 'EXPIRED'].includes(t.status)
         ).length;
 
-        const completedTrades = trades.filter(t => 
+        const completedTrades = trades.filter(t =>
             t.status === 'COMPLETED'
         ).length;
 
@@ -28,7 +28,7 @@ export async function getDashboardStats(req: Request, res: Response) {
             where: { agentId }
         });
 
-        const totalCommissions = commissions.reduce((sum, c) => 
+        const totalCommissions = commissions.reduce((sum, c) =>
             sum + Number(c.amount), 0
         );
 
@@ -40,8 +40,10 @@ export async function getDashboardStats(req: Request, res: Response) {
             .filter(c => new Date(c.createdAt) >= thisMonthStart)
             .reduce((sum, c) => sum + Number(c.amount), 0);
 
-        // Get pending documents count (mock for now)
-        const pendingDocuments = 5;
+        // Get actual pending documents count (unverified customers on agent platform)
+        const pendingDocuments = await prisma.customer.count({
+            where: { verified: false }
+        });
 
         res.json({
             activeTrades,
@@ -146,7 +148,7 @@ export async function getAgentTrade(req: Request, res: Response) {
         const { id } = req.params;
 
         const trade = await prisma.trade.findFirst({
-            where: { 
+            where: {
                 id,
                 agentId // Ensure agent can only access their own trades
             }

@@ -145,6 +145,7 @@ model Customer {
   trades    Trade[]            @relation("CustomerTrades")
   bankDetails CustomerBankDetails[]
   tradeRequests TradeRequest[]
+  supplierLinks SupplierCustomer[]
 }
 
 model CustomerBankDetails {
@@ -170,8 +171,15 @@ model TradeRequest {
   purpose         String?
   tradeType       String   @default("BUY") // BUY, SELL
   receiptUrl      String?  // Receipt uploaded during initialization
-  status          String   @default("PENDING") // PENDING, POOL, PROCESSED, REJECTED
+  status          String   @default("PENDING") // PENDING, POOL, ASSIGNED, PROCESSED, REJECTED
   createdAt       DateTime @default(now())
+
+  // Supplier details submitted by customer
+  supplierBusinessName  String?
+  supplierBankName      String?
+  supplierAccountNumber String?
+  supplierSector        String?
+  supplierAddress       String?
 
   customer Customer @relation(fields: [customerId], references: [id])
   agent    User?    @relation("AgentTradeRequests", fields: [agentId], references: [id])
@@ -237,6 +245,15 @@ model Trade {
 
   // Escrow / Admin Hold
   isCommissionFrozen Boolean @default(false)
+
+  // Admin-managed fields
+  tradeRequestId        String?
+  receiptUrl            String?
+  supplierBusinessName  String?
+  supplierBankName      String?
+  supplierAccountNumber String?
+  supplierSector        String?
+  supplierAddress       String?
 
   customer     Customer      @relation("CustomerTrades", fields: [customerId], references: [id])
   agent        User          @relation("AgentTrades", fields: [agentId], references: [id])
@@ -342,4 +359,31 @@ model CustomerNote {
 
   customer Customer @relation(fields: [customerId], references: [id])
   agent    User     @relation("AgentNotes", fields: [agentId], references: [id])
+}
+
+// ---------- SUPPLIERS ----------
+
+model Supplier {
+  id            String   @id @default(uuid())
+  businessName  String
+  bankName      String
+  accountNumber String
+  sector        String
+  address       String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  linkedCustomers SupplierCustomer[]
+}
+
+model SupplierCustomer {
+  id         String   @id @default(uuid())
+  supplierId String
+  customerId String
+  createdAt  DateTime @default(now())
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([supplierId, customerId])
 }

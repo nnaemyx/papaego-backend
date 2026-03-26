@@ -87,8 +87,8 @@ export async function createTrade(req: Request, res: Response) {
     } catch (error: any) {
         const errorMsg = error?.message || "Unknown Error";
         console.error("Error creating trade!!", errorMsg, error);
-        res.status(500).json({ 
-            error: "Failed to create trade", 
+        res.status(500).json({
+            error: "Failed to create trade",
             message: errorMsg,
             details: error || {},
             requestBody: req.body
@@ -158,6 +158,19 @@ export async function quoteTrade(req: Request, res: Response) {
             amount: trade.amount.toString(),
             currency: trade.sendCurrency,
             dashboardLink: `${process.env.FRONTEND_URL}/customer/trades/${trade.id}`
+        });
+    }
+
+    // Notify admins
+    const admins = await prisma.user.findMany({ where: { role: 'ADMIN' } });
+    for (const admin of admins) {
+        await prisma.notification.create({
+            data: {
+                userId: admin.id,
+                title: 'Agent Set Exchange Rate',
+                message: `Agent has set the exchange rate for trade #${trade.id.slice(0, 8).toUpperCase()}.`,
+                type: 'INFO',
+            }
         });
     }
 

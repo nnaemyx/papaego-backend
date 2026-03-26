@@ -449,10 +449,12 @@ export async function getAgent(req: Request, res: Response) {
             name: user.firstName && user.lastName
                 ? `${user.firstName} ${user.lastName}`
                 : user.firstName || user.lastName || user.email?.split('@')[0] || 'Agent',
+            phone: user.phone || null,
             status: user.isActive ? 'Active' : 'Inactive',
             region: user.agentProfile?.region || 'N/A',
             licenseId: user.agentProfile?.licenseId || 'N/A',
             onboardingStatus: user.agentProfile?.onboardingStatus || 'PENDING',
+            agentProfile: user.agentProfile,
             statistics: {
                 totalTrades,
                 activeTrades,
@@ -746,7 +748,32 @@ export async function deleteTransaction(req: Request, res: Response) {
         // Delete associated records first (e.g. Commissions or ComplianceFlags)
         // Prisma will handle cascades if configured, but manually deleting related records ensures safety
 
+        // Delete Chat messages
+        await prisma.chatMessage.deleteMany({
+            where: { tradeId: id }
+        });
+
+        // Get commissions to safely delete commission activities
+        const commissions = await prisma.commission.findMany({
+            where: { tradeId: id }
+        });
+        const commissionIds = commissions.map(c => c.id);
+
+        if (commissionIds.length > 0) {
+            await prisma.commissionActivity.deleteMany({
+                where: { commissionId: { in: commissionIds } }
+            });
+        }
+
         await prisma.complianceFlag.deleteMany({
+            where: { tradeId: id }
+        });
+
+        await prisma.complianceReport.deleteMany({
+            where: { tradeId: id }
+        });
+
+        await prisma.overrideApproval.deleteMany({
             where: { tradeId: id }
         });
 
