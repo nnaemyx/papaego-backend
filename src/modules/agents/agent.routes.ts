@@ -49,9 +49,9 @@ router.put("/profile", updateAgentProfile);
 router.put("/profile/password", updateAgentPassword);
 router.post("/profile/avatar", uploadToCloudinary.single("avatar"), uploadProfileAvatar);
 
-// Customers
+// Customers — static routes MUST come before parameterized /:id routes
 router.get("/customers", getAgentCustomers);
-router.get("/customers/stats", getAgentCustomerStats);
+router.get("/customers/stats", getAgentCustomerStats); // Must be before /:id
 router.get("/customers/:id", getAgentCustomer);
 
 // Documents
