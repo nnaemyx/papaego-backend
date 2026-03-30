@@ -595,3 +595,57 @@ export async function sendTradeCompletedWithReceiptEmail({
     console.error("Error sending trade completed email:", error);
   }
 }
+
+/**
+ * Sends a generic message from admin to a customer
+ */
+export async function sendAdminMessageEmail({
+  email,
+  customerName,
+  subject,
+  message,
+}: {
+  email: string;
+  customerName: string;
+  subject: string;
+  message: string;
+}) {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: 'PapaEgo Support <support@papaego.com>',
+      to: email,
+      subject: subject || "Message from PapaEgo Administration",
+      text: `
+Hello ${customerName},
+
+${message}
+
+Thank you,
+PapaEgo Support Team
+© ${new Date().getFullYear()} PapaEgo. All rights reserved.
+      `,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <body style="font-family: -apple-system, sans-serif; background-color: #f6f9fc; margin: 0; padding: 20px;">
+            <div style="background-color: #ffffff; max-width: 600px; margin: 0 auto; padding: 24px; border-radius: 8px;">
+              <h2 style="color: #012333; margin-bottom: 24px;">${subject || "Message from PapaEgo"}</h2>
+              <p style="color: #333; font-size: 16px;">Hello ${customerName},</p>
+              <div style="color: #333; font-size: 16px; margin: 24px 0; background: #f7f8f9; padding: 15px; border-radius: 6px; white-space: pre-wrap;">${message}</div>
+              
+              <p style="color: #666; font-size: 14px; margin-top: 32px;">If you have any questions, please reply to this email to contact our support team.</p>
+              
+              <hr style="border: 0; border-top: 1px solid #e6ebf1; margin: 32px 0;" />
+              <p style="color: #8898aa; font-size: 12px; margin: 0;">© ${new Date().getFullYear()} PapaEgo. All rights reserved.</p>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+    if (error) throw error;
+    return { success: true, messageId: data?.id };
+  } catch (error) {
+    console.error("❌ Error sending admin message email:", error);
+    throw new Error("Failed to send message email");
+  }
+}

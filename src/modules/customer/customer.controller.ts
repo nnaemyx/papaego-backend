@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
+import { sendAdminMessageEmail } from "../../services/email.service";
 
 // Get all customers with filters
 export async function getCustomers(req: Request, res: Response) {
@@ -31,6 +32,14 @@ export async function getCustomers(req: Request, res: Response) {
         if (sector && sector !== 'All') {
             where.companySector = sector as string;
         }
+
+        // Exclude soft-deleted customers by checking if the email doesn't start with deleted_
+        where.user = {
+            OR: [
+                { email: null },
+                { email: { not: { startsWith: 'deleted_' } } }
+            ]
+        };
 
         const customers = await prisma.customer.findMany({
             where,
@@ -432,5 +441,157 @@ export async function exportCustomers(req: Request, res: Response) {
     } catch (error) {
         console.error("Error exporting customers:", error);
         res.status(500).json({ error: "Failed to export customers" });
+    }
+}
+
+// ---------------------- ADMIN CUSTOMER ACTIONS ----------------------
+
+// Safe/Soft Delete a customer
+export async function deleteCustomer(req: Request, res: Response) {
+    try {
+        const { id } = req.params;
+
+        const customer = await prisma.customer.findUnique({
+            where: { id },
+            include: { user: true, trades: true }
+        });
+
+        if (!customer) {
+            return res.status(404).json({ error: "Customer not found" });
+        }
+
+        const hasTrades = customer.trades.length > 0;
+
+        if (hasTrades) {
+            // Soft delete: restrict account, anonymize login so it's effectively "deleted" but trades remain
+            await prisma.user.update({
+                where: { id: customer.userId },
+                data: {
+                    isActive: false,
+                    email: `deleted_${Date.now()}_${customer.user.email || customer.email || id}`,
+                }
+            });
+
+            // Note: we're not touching the customer.email so the historical data still looks okayish, 
+            // but we freed up the User login email in case they want to sign up again.
+
+            await prisma.auditLog.create({
+                data: {
+                    actorId: (req as any).user.id,
+                    role: "ADMIN",
+                    action: "CUSTOMER_SOFT_DELETED",
+                    entity: "Customer",
+                    entityId: id,
+                    ip: req.ip || "127.0.0.1"
+                }
+            });
+
+            return res.json({ success: true, message: "Customer soft-deleted successfully (retained trades)." });
+        } else {
+            // Hard delete: safe because there are no trades
+            await prisma.$transaction(async (tx: any) => {
+                await tx.customerNote.deleteMany({ where: { customerId: id } });
+                await tx.customerDocument.deleteMany({ where: { customerId: id } });
+                await tx.customerBankDetails.deleteMany({ where: { customerId: id } });
+                await tx.tradeRequest.deleteMany({ where: { customerId: id } });
+                await tx.customer.delete({ where: { id } });
+                await tx.user.delete({ where: { id: customer.userId } });
+            });
+
+            await prisma.auditLog.create({
+                data: {
+                    actorId: (req as any).user.id,
+                    role: "ADMIN",
+                    action: "CUSTOMER_HARD_DELETED",
+                    entity: "Customer",
+                    entityId: id,
+                    ip: req.ip || "127.0.0.1"
+                }
+            });
+
+            return res.json({ success: true, message: "Customer strictly deleted." });
+        }
+    } catch (error) {
+        console.error("Error deleting customer:", error);
+        res.status(500).json({ error: "Failed to delete customer" });
+    }
+}
+
+// Toggle customer account restriction
+export async function restrictCustomer(req: Request, res: Response) {
+    try {
+        const { id } = req.params;
+
+        const customer = await prisma.customer.findUnique({
+            where: { id },
+            include: { user: true }
+        });
+
+        if (!customer) return res.status(404).json({ error: "Customer not found" });
+
+        const newState = !customer.user.isActive;
+
+        await prisma.user.update({
+            where: { id: customer.userId },
+            data: { isActive: newState }
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: "ADMIN",
+                action: newState ? "CUSTOMER_REACTIVATED" : "CUSTOMER_RESTRICTED",
+                entity: "Customer",
+                entityId: id,
+                ip: req.ip || "127.0.0.1"
+            }
+        });
+
+        res.json({ success: true, isActive: newState });
+    } catch (error) {
+        console.error("Error restricting customer:", error);
+        res.status(500).json({ error: "Failed to update customer status" });
+    }
+}
+
+// Send email message to customer
+export async function sendCustomerMessage(req: Request, res: Response) {
+    try {
+        const { id } = req.params;
+        const { subject, message } = req.body;
+
+        if (!message) return res.status(400).json({ error: "Message is required" });
+
+        const customer = await prisma.customer.findUnique({
+            where: { id },
+            include: { user: true }
+        });
+
+        if (!customer || !customer.email) {
+            return res.status(404).json({ error: "Customer not found or has no email address" });
+        }
+
+        await sendAdminMessageEmail({
+            email: customer.email,
+            customerName: customer.fullName.split(' ')[0],
+            subject: subject || "Message from Administration",
+            message
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: "ADMIN",
+                action: "CUSTOMER_EMAILED",
+                entity: "Customer",
+                entityId: id,
+                ip: req.ip || "127.0.0.1"
+            }
+        });
+
+        res.json({ success: true, message: "Email sent successfully" });
+    } catch (error) {
+        console.error("Error sending message to customer:", error);
+        res.status(500).json({ error: "Failed to send message" });
     }
 }

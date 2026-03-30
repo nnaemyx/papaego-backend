@@ -8,7 +8,10 @@ import {
     addCustomerNote,
     getCustomerTransactions,
     exportCustomers,
-    approveCustomer
+    approveCustomer,
+    deleteCustomer,
+    restrictCustomer,
+    sendCustomerMessage
 } from "./customer.controller";
 
 const router = Router();
@@ -24,5 +27,8 @@ router.get("/:id", getCustomer);
 router.get("/:id/transactions", getCustomerTransactions);
 router.post("/:id/notes", addCustomerNote);
 router.patch("/:id/approve", approveCustomer);
+router.delete("/:id", deleteCustomer);
+router.patch("/:id/restrict", restrictCustomer);
+router.post("/:id/message", sendCustomerMessage);
 
 export default router;
