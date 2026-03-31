@@ -283,3 +283,39 @@ export async function exportCommissions(req: Request, res: Response) {
         res.status(500).json({ error: "Failed to export commissions" });
     }
 }
+
+// Get commissions for current agent
+export async function getAgentCommissions(req: Request, res: Response) {
+    try {
+        const agentId = (req as any).user.id;
+        const commissions = await prisma.commission.findMany({
+            where: { agentId },
+            include: {
+                trade: {
+                    select: {
+                        id: true,
+                        createdAt: true,
+                        amount: true,
+                        sendCurrency: true
+                    }
+                }
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        const formatted = commissions.map(c => ({
+            id: c.id,
+            reference: c.reference,
+            date: c.createdAt.toLocaleDateString(),
+            amount: `₦${Number(c.amount).toLocaleString()}`,
+            status: c.status,
+            tradeAmount: `${c.trade.amount} ${c.trade.sendCurrency}`,
+            createdAt: c.createdAt
+        }));
+
+        res.json(formatted);
+    } catch (error) {
+        console.error("Error fetching agent commissions:", error);
+        res.status(500).json({ error: "Failed to fetch commissions" });
+    }
+}

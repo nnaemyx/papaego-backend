@@ -7,26 +7,46 @@ import prisma from "../../config/db";
  */
 export async function sendMessage(req: Request, res: Response) {
     try {
-        const { tradeId, message, imageUrl } = req.body;
+        const { tradeId, tradeRequestId, message, imageUrl, fileUrl } = req.body;
         const userId = (req as any).user.id;
         const role = (req as any).user.role;
 
-        if (!tradeId || (!message && !imageUrl)) {
-            return res.status(400).json({ error: "Trade ID and message (or image) are required" });
+        // TradeRequest is the primary entity for our new chat flow
+        if (!tradeRequestId && !tradeId) {
+            return res.status(400).json({ error: "Trade Request ID or Trade ID is required" });
         }
 
-        // Verify trade existence
-        const trade = await prisma.trade.findUnique({ where: { id: tradeId } });
-        if (!trade) {
-            return res.status(404).json({ error: "Trade not found" });
+        if (!message && !imageUrl && !fileUrl) {
+            return res.status(400).json({ error: "Message content or attachment is required" });
         }
 
-        const chatMessage = await (prisma as any).chatMessage.create({
+        // Verification & Access Control
+        if (tradeRequestId) {
+            const tr = await prisma.tradeRequest.findUnique({ 
+                where: { id: tradeRequestId },
+                include: { customer: true }
+            });
+            if (!tr) return res.status(404).json({ error: "Trade Request not found" });
+
+            // Restriction: Agents can no longer chat (per new requirement)
+            if (role === "AGENT") {
+                return res.status(403).json({ error: "Agents are not permitted to use chat" });
+            }
+
+            // If Customer, verify ownership
+            if (role === "CUSTOMER" && tr.customer.userId !== userId) {
+                return res.status(403).json({ error: "Unauthorized access to this chat" });
+            }
+        }
+
+        const chatMessage = await prisma.chatMessage.create({
             data: {
-                tradeId,
+                tradeId: tradeId || null,
+                tradeRequestId: tradeRequestId || null,
                 senderId: userId,
-                message,
-                imageUrl,
+                message: message || null,
+                imageUrl: imageUrl || null,
+                fileUrl: fileUrl || null,
                 role
             }
         });
@@ -39,17 +59,53 @@ export async function sendMessage(req: Request, res: Response) {
 }
 
 /**
- * Get chat messages for a trade
- * GET /api/chat/messages/:tradeId
+ * Get chat messages for a trade or trade request
+ * GET /api/chat/messages/:id
  */
 export async function getMessages(req: Request, res: Response) {
     try {
-        const { tradeId } = req.params;
+        const { id } = req.params; // Generic ID param
+        const { isTradeRequest } = req.query;
 
-        const messages = await (prisma as any).chatMessage.findMany({
-            where: { tradeId },
-            orderBy: { createdAt: "asc" }
-        });
+        let messages: any[] = [];
+
+        if (isTradeRequest === 'true') {
+            // Fetch messages directly on this tradeRequest
+            const requestMessages = await prisma.chatMessage.findMany({
+                where: { tradeRequestId: id },
+                orderBy: { createdAt: "asc" }
+            });
+
+            // Also find any Trades linked to this tradeRequest and get their messages
+            const linkedTrades = await prisma.trade.findMany({
+                where: { tradeRequestId: id },
+                select: { id: true }
+            });
+
+            let tradeMessages: any[] = [];
+            if (linkedTrades.length > 0) {
+                const linkedTradeIds = linkedTrades.map((t: any) => t.id);
+                tradeMessages = await prisma.chatMessage.findMany({
+                    where: { tradeId: { in: linkedTradeIds } },
+                    orderBy: { createdAt: "asc" }
+                });
+            }
+
+            // Merge, deduplicate by ID, and sort by createdAt
+            const seen = new Set<string>();
+            messages = [...requestMessages, ...tradeMessages]
+                .filter((m) => {
+                    if (seen.has(m.id)) return false;
+                    seen.add(m.id);
+                    return true;
+                })
+                .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        } else {
+            messages = await prisma.chatMessage.findMany({
+                where: { tradeId: id },
+                orderBy: { createdAt: "asc" }
+            });
+        }
 
         res.json(messages);
     } catch (error) {

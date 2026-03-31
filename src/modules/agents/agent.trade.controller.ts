@@ -160,6 +160,9 @@ export async function quoteTrade(req: Request, res: Response) {
             tradeId: trade.id.slice(0, 8).toUpperCase(),
             amount: trade.amount.toString(),
             currency: trade.sendCurrency,
+            fxRate: fxRate?.toString(),
+            payoutAmount: trade.payoutAmount?.toString(),
+            receiveCurrency: trade.receiveCurrency,
             dashboardLink: `${process.env.FRONTEND_URL}/customer/trades/${trade.id}`,
             adminEmails
         });

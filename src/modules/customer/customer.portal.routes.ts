@@ -3,10 +3,9 @@ import { auth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/rbac.middleware";
 import prisma from "../../config/db";
 import { customerSignup, uploadCustomerDocument } from "./customer.signup.controller";
-import { createTradeRequest, getCustomerTradeRequests } from "./customer.request.controller";
+import { createTradeRequest, getCustomerTradeRequests, getTradeRequestById } from "./customer.request.controller";
 import { upsertBankDetails, getBankDetails } from "./customer.bank.controller";
 import { uploadToCloudinary } from "../../middlewares/upload.middleware";
-import { getSuppliers } from "./customer.supplier.controller";
 import { sendReceiptUploadedEmail } from "../../services/email.service";
 
 const router = Router();
@@ -93,13 +92,11 @@ router.get("/dashboard/stats", async (req: Request, res: Response) => {
 // --- Trade Requests ---
 router.post("/trade-requests", createTradeRequest);
 router.get("/trade-requests", getCustomerTradeRequests);
+router.get("/trade-requests/:id", getTradeRequestById);
 
 // --- Bank Details ---
 router.post("/bank-details", upsertBankDetails);
 router.get("/bank-details", getBankDetails);
-
-// --- Suppliers ---
-router.get("/suppliers", getSuppliers);
 
 /**
  * GET /customer/portal/trades

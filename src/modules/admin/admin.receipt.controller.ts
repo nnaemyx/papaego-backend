@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { createNotification } from "../notifications/notification.service";
 import { sendTradeCompletedWithReceiptEmail } from "../../services/email.service";
+import { triggerTradeCommission } from "../commission/commission.service";
 
 /**
  * PATCH /api/admin/transactions/:id/receipt
@@ -33,13 +34,16 @@ export async function uploadTradeReceipt(req: Request, res: Response) {
         // multer-storage-cloudinary puts the Cloudinary URL in req.file.path
         const receiptUrl = (req.file as any).path || (req.file as any).secure_url;
 
-        await (prisma.trade as any).update({
+        await prisma.trade.update({
             where: { id },
             data: { 
                 receiptUrl,
                 status: "COMPLETED"
             },
         });
+
+        // Trigger agent commission generation
+        await triggerTradeCommission(id);
 
         // Notify the customer
         if ((trade as any).customer?.userId) {

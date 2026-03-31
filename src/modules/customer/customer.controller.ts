@@ -1,7 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
-import { sendAdminMessageEmail } from "../../services/email.service";
-
+import { sendAdminMessageEmail, sendCustomerVerificationEmail } from "../../services/email.service";
 // Get all customers with filters
 export async function getCustomers(req: Request, res: Response) {
     try {
@@ -394,6 +393,23 @@ export async function approveCustomer(req: Request, res: Response) {
                 ip: req.ip || "127.0.0.1"
             }
         });
+
+        const customerWithUser = await prisma.customer.findUnique({
+            where: { id },
+            include: { user: { select: { email: true } } }
+        });
+
+        if (customerWithUser && (customerWithUser.email || customerWithUser.user?.email)) {
+            const email = customerWithUser.email || customerWithUser.user!.email;
+            if (email) {
+                const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+                await sendCustomerVerificationEmail({
+                    email,
+                    customerName: customerWithUser.fullName,
+                    loginLink: `${frontendUrl}/customer-auth/login`
+                });
+            }
+        }
 
         res.json({ success: true, customer });
     } catch (error) {

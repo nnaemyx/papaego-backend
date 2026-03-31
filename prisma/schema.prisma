@@ -69,14 +69,14 @@ model User {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
-  agentProfile   AgentProfile?
-  customer       Customer?
-  commissions    Commission[]       @relation("AgentCommissions")
-  agentNotes     CustomerNote[]     @relation("AgentNotes")
-  notifications  Notification[]
-  agentDocuments CustomerDocument[] @relation("AgentDocuments")
-  agentTrades    Trade[]            @relation("AgentTrades")
-  agentTradeRequests TradeRequest[] @relation("AgentTradeRequests")
+  agentProfile       AgentProfile?
+  customer           Customer?
+  commissions        Commission[]       @relation("AgentCommissions")
+  agentNotes         CustomerNote[]     @relation("AgentNotes")
+  notifications      Notification[]
+  agentDocuments     CustomerDocument[] @relation("AgentDocuments")
+  agentTrades        Trade[]            @relation("AgentTrades")
+  agentTradeRequests TradeRequest[]     @relation("AgentTradeRequests")
 }
 
 model Notification {
@@ -121,32 +121,33 @@ model AgentProfile {
 // ---------- CUSTOMERS ----------
 
 model Customer {
-  id            String   @id @default(uuid())
-  userId        String   @unique
-  bvn           String
-  fullName      String
-  bankName      String?
-  accountNo     String?
-  email         String?
-  phone         String?
-  gender        String?
-  dateOfBirth   DateTime?
-  homeAddress   String?
-  nin           String?
-  companyName   String?
-  companySector String?
-  governmentIdUrl     String?
-  proofOfAddressUrl   String?
-  verified      Boolean  @default(false)
-  createdAt     DateTime @default(now())
+  id                String    @id @default(uuid())
+  userId            String    @unique
+  bvn               String
+  fullName          String
+  bankName          String?
+  accountNo         String?
+  email             String?
+  phone             String?
+  gender            String?
+  dateOfBirth       DateTime?
+  homeAddress       String?
+  nin               String?
+  companyName       String?
+  companySector     String?
+  governmentIdUrl   String?
+  proofOfAddressUrl String?
+  verified          Boolean   @default(false)
+  createdAt         DateTime  @default(now())
 
-  user      User               @relation(fields: [userId], references: [id])
-  notes     CustomerNote[]
-  documents CustomerDocument[]
-  trades    Trade[]            @relation("CustomerTrades")
-  bankDetails CustomerBankDetails[]
-  tradeRequests TradeRequest[]
-  supplierLinks SupplierCustomer[]
+  user               User                    @relation(fields: [userId], references: [id])
+  notes              CustomerNote[]
+  documents          CustomerDocument[]
+  trades             Trade[]                 @relation("CustomerTrades")
+  bankDetails        CustomerBankDetails[]
+  tradeRequests      TradeRequest[]
+  suppliers          Supplier[]
+  adminSupplierLinks AdminSupplierCustomer[]
 }
 
 model CustomerBankDetails {
@@ -171,35 +172,41 @@ model TradeRequest {
   receiveCurrency String
   purpose         String?
   tradeType       String   @default("BUY") // BUY, SELL
-  receiptUrl      String?  // Receipt uploaded during initialization
+  receiptUrl      String? // Receipt uploaded during initialization
   status          String   @default("PENDING") // PENDING, POOL, ASSIGNED, PROCESSED, REJECTED
   createdAt       DateTime @default(now())
 
   // Supplier details submitted by customer
+  supplierId            String?
   supplierBusinessName  String?
   supplierBankName      String?
   supplierAccountNumber String?
   supplierSector        String?
   supplierAddress       String?
+  invoiceUrl            String?
 
-  fxRate          Decimal?
-  payoutAmount    Decimal?
-  quotedAt        DateTime?
+  fxRate       Decimal?
+  payoutAmount Decimal?
+  quotedAt     DateTime?
 
-  customer Customer @relation(fields: [customerId], references: [id])
-  agent    User?    @relation("AgentTradeRequests", fields: [agentId], references: [id])
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  agent        User?         @relation("AgentTradeRequests", fields: [agentId], references: [id])
+  chatMessages ChatMessage[]
 }
 
 model ChatMessage {
-  id        String   @id @default(uuid())
-  tradeId   String
-  senderId  String
-  message   String?
-  imageUrl  String?
-  role      String   // CUSTOMER, AGENT, ADMIN
-  createdAt DateTime @default(now())
+  id             String   @id @default(uuid())
+  tradeId        String?
+  tradeRequestId String?
+  senderId       String
+  message        String?
+  imageUrl       String?
+  fileUrl        String?
+  role           String // CUSTOMER, AGENT, ADMIN
+  createdAt      DateTime @default(now())
 
-  trade Trade @relation(fields: [tradeId], references: [id])
+  trade        Trade?        @relation(fields: [tradeId], references: [id])
+  tradeRequest TradeRequest? @relation(fields: [tradeRequestId], references: [id])
 }
 
 // ---------- CUSTOMER DOCUMENTS ----------
@@ -224,12 +231,12 @@ model CustomerDocument {
 // ---------- TRADES ----------
 
 model Trade {
-  id         String @id @default(uuid())
+  id         String  @id @default(uuid())
   agentId    String
   customerId String
   countryId  String?
 
-  tradeType       String   @default("BUY") // BUY, SELL
+  tradeType       String    @default("BUY") // BUY, SELL
   sendCurrency    String
   receiveCurrency String
   amount          Decimal
@@ -374,7 +381,26 @@ model CustomerNote {
 
 // ---------- SUPPLIERS ----------
 
+// Customer self-service suppliers (beneficiary bank details)
 model Supplier {
+  id              String   @id @default(uuid())
+  customerId      String
+  beneficiaryName String
+  bankName        String?
+  accountNumber   String?
+  iban            String?
+  swiftBic        String?
+  routingCode     String?
+  currency        String?
+  address         String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+}
+
+// Admin-managed global supplier directory
+model AdminSupplier {
   id            String   @id @default(uuid())
   businessName  String
   bankName      String
@@ -384,17 +410,18 @@ model Supplier {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  linkedCustomers SupplierCustomer[]
+  linkedCustomers AdminSupplierCustomer[]
 }
 
-model SupplierCustomer {
+// Join table linking admin suppliers to customers
+model AdminSupplierCustomer {
   id         String   @id @default(uuid())
   supplierId String
   customerId String
   createdAt  DateTime @default(now())
 
-  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  supplier AdminSupplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  customer Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@unique([supplierId, customerId])
 }

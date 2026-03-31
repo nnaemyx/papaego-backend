@@ -22,7 +22,9 @@ export async function createTradeRequest(req: Request, res: Response) {
             purpose,
             tradeType,
             receiptUrl,
-            // Supplier details (new)
+            invoiceUrl,
+            supplierId,
+            // Fallback raw fields if supplierId is not used
             businessName,
             bankName,
             accountNumber,
@@ -34,46 +36,24 @@ export async function createTradeRequest(req: Request, res: Response) {
             return res.status(400).json({ error: "Amount is required" });
         }
 
-        if (businessName && bankName && accountNumber) {
-            try {
-                const existingLink = await prisma.supplierCustomer.findFirst({
-                    where: {
-                        customerId,
-                        supplier: { bankName, accountNumber }
-                    }
-                });
-                if (!existingLink) {
-                    // Check if a supplier with this bank+account already exists (avoid duplicates)
-                    const existingSupplier = await prisma.supplier.findFirst({
-                        where: { bankName, accountNumber }
-                    });
-                    if (existingSupplier) {
-                        // Just link this customer to the existing supplier
-                        await prisma.supplierCustomer.create({
-                            data: { supplierId: existingSupplier.id, customerId }
-                        });
-                    } else {
-                        await prisma.supplier.create({
-                            data: {
-                                businessName,
-                                bankName,
-                                accountNumber,
-                                sector: sector || "Other",
-                                address: address || null,
-                                linkedCustomers: {
-                                    create: { customerId }
-                                }
-                            }
-                        });
-                    }
-                }
-            } catch (supplierErr) {
-                // Non-fatal — supplier linking fails silently, trade request still goes through
-                console.error("Supplier creation/linking failed (non-fatal):", supplierErr);
+        let actualSupplierBusinessName = businessName || null;
+        let actualSupplierBankName = bankName || null;
+        let actualSupplierAccountNumber = accountNumber || null;
+        let actualSupplierSector = sector || null;
+        let actualSupplierAddress = address || null;
+
+        if (supplierId) {
+            const supplier = await prisma.supplier.findUnique({ where: { id: supplierId } });
+            if (supplier && supplier.customerId === customerId) {
+                actualSupplierBusinessName = supplier.beneficiaryName;
+                actualSupplierBankName = supplier.bankName;
+                actualSupplierAccountNumber = supplier.accountNumber;
+                actualSupplierSector = supplier.routingCode; // Using routing code as sector mapping fallback
+                actualSupplierAddress = supplier.address;
             }
         }
 
-        const tradeRequest = await (prisma.tradeRequest as any).create({
+        const tradeRequest = await prisma.tradeRequest.create({
             data: {
                 customerId,
                 agentId: agentId || null,
@@ -83,16 +63,17 @@ export async function createTradeRequest(req: Request, res: Response) {
                 purpose,
                 tradeType: tradeType || "BUY",
                 receiptUrl,
-                status: "PENDING", // Admin sees all PENDING requests
-                // Store supplier details on the request
-                supplierBusinessName: businessName || null,
-                supplierBankName: bankName || null,
-                supplierAccountNumber: accountNumber || null,
-                supplierSector: sector || null,
-                supplierAddress: address || null,
-            } as any,
+                status: "PENDING",
+                invoiceUrl,
+                supplierId: supplierId || null,
+                supplierBusinessName: actualSupplierBusinessName,
+                supplierBankName: actualSupplierBankName,
+                supplierAccountNumber: actualSupplierAccountNumber,
+                supplierSector: actualSupplierSector,
+                supplierAddress: actualSupplierAddress,
+            },
             include: {
-                customer: true,
+                customer: { include: { user: true } },
                 agent: true,
             },
         });
@@ -104,7 +85,7 @@ export async function createTradeRequest(req: Request, res: Response) {
                 createNotification(
                     admin.id,
                     "New Trade Request",
-                    `Customer ${(tradeRequest as any).customer.fullName} has submitted a trade request for ${amount} ${sendCurrency} → ${receiveCurrency}.`,
+                    `Customer ${tradeRequest.customer.fullName || 'Unknown'} has submitted a trade request for ${amount} ${sendCurrency} → ${receiveCurrency}.`,
                     "INFO"
                 )
             )
@@ -112,14 +93,14 @@ export async function createTradeRequest(req: Request, res: Response) {
 
         // Also notify agent and admins via email
         const adminEmails = admins.map(a => a.email).filter((e): e is string => !!e);
-        if ((tradeRequest as any).agent?.email) {
+        if (tradeRequest.agent?.email) {
             await sendTradeInitiatedEmail({
-                agentEmail: (tradeRequest as any).agent.email,
-                agentName: (tradeRequest as any).agent.firstName || "Agent",
-                customerName: (tradeRequest as any).customer.fullName,
+                agentEmail: tradeRequest.agent.email,
+                agentName: tradeRequest.agent.firstName || "Agent",
+                customerName: tradeRequest.customer.fullName || 'Unknown',
                 amount: amount.toString(),
                 currency: sendCurrency,
-                tradeId: (tradeRequest as any).id.slice(0, 8).toUpperCase(),
+                tradeId: tradeRequest.id.slice(0, 8).toUpperCase(),
                 adminEmails,
             });
         }
@@ -157,5 +138,29 @@ export async function getCustomerTradeRequests(req: Request, res: Response) {
     } catch (error) {
         console.error("Error fetching customer trade requests:", error);
         res.status(500).json({ error: "Failed to fetch trade requests" });
+    }
+}
+
+/**
+ * Get a single customer trade request by ID
+ * GET /api/customer/portal/trade-requests/:id
+ */
+export async function getTradeRequestById(req: Request, res: Response) {
+    try {
+        const customerId = (req as any).user.customer?.id;
+        const { id } = req.params;
+
+        const request = await prisma.tradeRequest.findFirst({
+            where: { id, customerId },
+        });
+
+        if (!request) {
+            return res.status(404).json({ error: "Trade request not found" });
+        }
+
+        res.json(request);
+    } catch (error) {
+        console.error("Error fetching trade request by ID:", error);
+        res.status(500).json({ error: "Failed to fetch trade request" });
     }
 }

@@ -165,6 +165,68 @@ Welcome aboard!
   }
 }
 
+interface CustomerVerificationParams {
+  email: string;
+  customerName: string;
+  loginLink: string;
+}
+
+/**
+ * Sends a welcome verification email when an Admin approves a customer
+ */
+export async function sendCustomerVerificationEmail({
+  email,
+  customerName,
+  loginLink,
+}: CustomerVerificationParams) {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: 'PapaEgo Verification <verify@papaego.com>',
+      to: email,
+      subject: "Welcome to PapaEgo - Account Verified!",
+      text: `
+Hello ${customerName},
+
+Congratulations! Your PapaEgo Customer account has been fully verified.
+
+You can now log in to your dashboard and begin creating trade requests.
+
+Login Here: ${loginLink}
+
+Welcome aboard!
+© ${new Date().getFullYear()} PapaEgo. All rights reserved.
+      `,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <body style="font-family: -apple-system, sans-serif; background-color: #f6f9fc; margin: 0; padding: 20px;">
+            <div style="background-color: #ffffff; max-width: 600px; margin: 0 auto; padding: 24px; border-radius: 8px;">
+              <h2 style="color: #27ae60; margin-bottom: 24px;">Account Verified! 🎉</h2>
+              <p style="color: #333; font-size: 16px;">Hello ${customerName},</p>
+              <p style="color: #333; font-size: 16px;">Congratulations! Your PapaEgo account has been fully verified and you are now ready to trade.</p>
+              
+              <div style="text-align: center; margin: 32px 0;">
+                <a href="${loginLink}" style="background-color: #c9a227; color: #ffffff; text-decoration: none; padding: 12px 32px; border-radius: 6px; font-weight: bold; display: inline-block;">
+                  Login to Dashboard
+                </a>
+              </div>
+              
+              <p style="color: #8898aa; font-size: 12px;">© ${new Date().getFullYear()} PapaEgo. All rights reserved.</p>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+    if (error) throw error;
+    console.log("✅ Verification email sent to customer:", data?.id);
+    return { success: true, messageId: data?.id };
+  } catch (error) {
+    console.error("❌ Error sending customer verification email:", error);
+    // Don't throw so it doesn't break the approval flow
+    return { success: false };
+  }
+}
+
 interface AgentSuspensionParams {
   email: string;
   agentName: string;
@@ -388,6 +450,9 @@ interface SupplierConfirmedParams {
   tradeId: string;
   amount: string;
   currency: string;
+  fxRate?: string;
+  payoutAmount?: string;
+  receiveCurrency?: string;
   dashboardLink: string;
   adminEmails?: string[];
 }
@@ -401,6 +466,9 @@ export async function sendSupplierConfirmedEmail({
   tradeId,
   amount,
   currency,
+  fxRate,
+  payoutAmount,
+  receiveCurrency,
   dashboardLink,
   adminEmails,
 }: SupplierConfirmedParams) {
@@ -414,7 +482,13 @@ export async function sendSupplierConfirmedEmail({
           <h2>Quote & Supplier Ready! ✅</h2>
           <p>Hello ${customerName},</p>
           <p>Your agent has provided the conversion rate and supplier account details for your trade request <strong>#${tradeId}</strong>.</p>
-          <p><strong>Amount:</strong> ${amount} ${currency}</p>
+          
+          <div style="background: #f7f8f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 0 0 10px 0;"><strong>Send Amount:</strong> ${amount} ${currency}</p>
+            ${fxRate ? `<p style="margin: 0 0 10px 0;"><strong>Exchange Rate:</strong> 1 ${currency} = ${fxRate} ${receiveCurrency || 'NGN'}</p>` : ''}
+            ${payoutAmount ? `<p style="margin: 0;"><strong>Estimated Payout:</strong> ${payoutAmount} ${receiveCurrency || ''}</p>` : ''}
+          </div>
+
           <div style="margin: 20px 0;">
             <a href="${dashboardLink}" style="background: #c9a227; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Confirm & Pay Now</a>
           </div>

@@ -7,20 +7,23 @@ import {
     getCommissionStats,
     updateCommissionStatus,
     addCommissionNote,
-    exportCommissions
+    exportCommissions,
+    getAgentCommissions
 } from "./commission.controller";
 
 const router = Router();
 
 router.use(auth);
-router.use(requireRole("ADMIN"));
 
-// Commission routes
-router.get("/", getCommissions);
-router.get("/stats", getCommissionStats);
-router.get("/export", exportCommissions);
-router.get("/:id", getCommission);
-router.patch("/:id/status", updateCommissionStatus);
-router.post("/:id/notes", addCommissionNote);
+// Agent routes
+router.get("/my-commissions", requireRole("AGENT"), getAgentCommissions);
+
+// Admin-only routes
+router.get("/", requireRole("ADMIN"), getCommissions);
+router.get("/stats", requireRole("ADMIN"), getCommissionStats);
+router.get("/export", requireRole("ADMIN"), exportCommissions);
+router.get("/:id", requireRole("ADMIN"), getCommission);
+router.patch("/:id/status", requireRole("ADMIN"), updateCommissionStatus);
+router.post("/:id/notes", requireRole("ADMIN"), addCommissionNote);
 
 export default router;

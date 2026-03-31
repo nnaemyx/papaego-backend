@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
+import { sendSupplierConfirmedEmail } from "../../services/email.service";
 
 /**
  * Get trade requests: either assigned to agent or in the global pool
@@ -176,8 +177,53 @@ export async function setTradeRequestRate(req: Request, res: Response) {
                 payoutAmount,
                 status: "QUOTED",
                 quotedAt: new Date()
+            },
+            include: {
+                customer: { include: { user: true } }
             }
         });
+
+        // --- Email & In-App Notifications ---
+        try {
+            const admins = await prisma.user.findMany({ where: { role: "ADMIN" }, select: { id: true, email: true } });
+            const adminEmails = admins.map((a: any) => a.email).filter((e: any): e is string => !!e);
+
+            const customerEmail = updated.customer?.email || updated.customer?.user?.email;
+            const customerName  = updated.customer?.fullName || "Customer";
+            const tradeRef      = updated.id.slice(0, 8).toUpperCase();
+
+            if (customerEmail) {
+                await sendSupplierConfirmedEmail({
+                    customerEmail,
+                    customerName,
+                    tradeId: tradeRef,
+                    amount: updated.amount.toString(),
+                    currency: updated.sendCurrency,
+                    fxRate: updated.fxRate?.toString(),
+                    payoutAmount: updated.payoutAmount?.toString(),
+                    receiveCurrency: updated.receiveCurrency,
+                    dashboardLink: `${process.env.FRONTEND_URL}/customer/trade-requests/${updated.id}`,
+                    adminEmails,
+                });
+            }
+
+            // In-app notifications for admins
+            await Promise.allSettled(
+                admins.map((admin: any) =>
+                    prisma.notification.create({
+                        data: {
+                            userId: admin.id,
+                            title: "Agent Set Exchange Rate",
+                            message: `Agent has quoted a rate for trade request #${tradeRef}.`,
+                            type: "INFO",
+                        },
+                    })
+                )
+            );
+        } catch (notifyError) {
+            // Don't fail the whole request if notifications error out
+            console.error("Error sending quote notifications:", notifyError);
+        }
 
         res.json(updated);
     } catch (error) {

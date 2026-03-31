@@ -48,6 +48,18 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
             return res.status(400).json({ error: "BVN is required" });
         }
 
+        let parsedDob: Date | null = null;
+        if (dateOfBirth) {
+            parsedDob = new Date(dateOfBirth);
+            if (isNaN(parsedDob.getTime())) {
+                return res.status(400).json({ error: "Invalid date of birth format" });
+            }
+            const year = parsedDob.getFullYear();
+            if (year < 1900 || year > new Date().getFullYear()) {
+                return res.status(400).json({ error: "Please enter a valid birth year" });
+            }
+        }
+
         // Check if email already exists
         const existingUser = await prisma.user.findFirst({ where: { email } });
         if (existingUser) {
@@ -79,7 +91,7 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
                     bvn: bvn || "",
                     nin: nin || null,
                     gender: gender || null,
-                    dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+                    dateOfBirth: parsedDob,
                     homeAddress: homeAddress || null,
                     companyName: companyName || null,
                     companySector: companySector || null,

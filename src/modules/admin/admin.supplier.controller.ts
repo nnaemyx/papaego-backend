@@ -3,7 +3,6 @@ import prisma from "../../config/db";
 
 /**
  * GET /api/admin/suppliers
- * List all suppliers with optional search/sector filter and pagination
  */
 export async function getSuppliers(req: Request, res: Response) {
     try {
@@ -12,7 +11,7 @@ export async function getSuppliers(req: Request, res: Response) {
         const skip = (parseInt(page as string, 10) - 1) * take;
 
         const where: any = {};
-        if (sector) where.sector = sector;
+        if (sector && sector !== "All") where.sector = sector;
         if (search) {
             where.OR = [
                 { businessName: { contains: search as string, mode: "insensitive" } },
@@ -21,35 +20,70 @@ export async function getSuppliers(req: Request, res: Response) {
             ];
         }
 
-        const [suppliers, total] = await Promise.all([
-            (prisma as any).supplier.findMany({
+        const personalWhere: any = {};
+        if (search) {
+            personalWhere.OR = [
+                { beneficiaryName: { contains: search as string, mode: "insensitive" } },
+                { bankName: { contains: search as string, mode: "insensitive" } },
+                { accountNumber: { contains: search as string, mode: "insensitive" } },
+            ];
+        }
+
+        const [adminSuppliers, personalSuppliers] = await Promise.all([
+            prisma.adminSupplier.findMany({
                 where,
                 include: {
                     linkedCustomers: {
                         include: {
-                            customer: {
-                                select: { id: true, fullName: true, email: true },
-                            },
+                            customer: { select: { id: true, fullName: true, email: true } },
                         },
                     },
                 },
                 orderBy: { createdAt: "desc" },
-                take,
-                skip,
             }),
-            (prisma as any).supplier.count({ where }),
+            prisma.supplier.findMany({
+                where: personalWhere,
+                include: {
+                    customer: { select: { id: true, fullName: true, email: true } },
+                },
+                orderBy: { createdAt: "desc" },
+            }),
         ]);
 
-        const formatted = suppliers.map((s: any) => ({
+        const formattedAdmin = adminSuppliers.map((s) => ({
             ...s,
-            linkedCustomers: s.linkedCustomers.map((sc: any) => ({
+            isCustomerInputted: false,
+            linkedCustomers: s.linkedCustomers.map((sc) => ({
                 id: sc.customer.id,
                 fullName: sc.customer.fullName,
                 email: sc.customer.email,
             })),
         }));
 
-        res.json({ suppliers: formatted, total });
+        const formattedPersonal = personalSuppliers.map((s) => ({
+            id: s.id, // ID collision? Very unlikely, using UUIDs
+            businessName: s.beneficiaryName,
+            bankName: s.bankName || "",
+            accountNumber: s.accountNumber || "",
+            sector: "Personal (Customer Added)",
+            address: s.address || "",
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+            isCustomerInputted: true,
+            linkedCustomers: s.customer ? [{ id: s.customer.id, fullName: s.customer.fullName, email: s.customer.email }] : [],
+        }));
+
+        let combined = [...formattedAdmin, ...formattedPersonal]
+            .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+        // Apply sector filter to combined if needed (Admin logic already filtered, this filters personal just in case)
+        if (sector && sector !== "All") {
+            combined = combined.filter((c) => c.sector === sector);
+        }
+
+        const paginated = combined.slice(skip, skip + take);
+
+        res.json({ suppliers: paginated, total: combined.length });
     } catch (error) {
         console.error("Error fetching suppliers:", error);
         res.status(500).json({ error: "Failed to fetch suppliers" });
@@ -61,7 +95,7 @@ export async function getSuppliers(req: Request, res: Response) {
  */
 export async function getSupplier(req: Request, res: Response) {
     try {
-        const supplier = await (prisma as any).supplier.findUnique({
+        const supplier = await prisma.adminSupplier.findUnique({
             where: { id: req.params.id },
             include: {
                 linkedCustomers: {
@@ -76,7 +110,7 @@ export async function getSupplier(req: Request, res: Response) {
 
         res.json({
             ...supplier,
-            linkedCustomers: supplier.linkedCustomers.map((sc: any) => ({
+            linkedCustomers: supplier.linkedCustomers.map((sc) => ({
                 id: sc.customer.id,
                 fullName: sc.customer.fullName,
                 email: sc.customer.email,
@@ -99,14 +133,14 @@ export async function createSupplier(req: Request, res: Response) {
             return res.status(400).json({ error: "businessName, bankName, accountNumber and sector are required" });
         }
 
-        const supplier = await (prisma as any).supplier.create({
+        const supplier = await prisma.adminSupplier.create({
             data: {
                 businessName,
                 bankName,
                 accountNumber,
                 sector,
                 address: address || null,
-                linkedCustomers: customerIds.length > 0
+                linkedCustomers: (customerIds as string[]).length > 0
                     ? {
                           create: (customerIds as string[]).map((cid) => ({ customerId: cid })),
                       }
@@ -126,7 +160,7 @@ export async function createSupplier(req: Request, res: Response) {
                 actorId: (req as any).user.id,
                 role: "ADMIN",
                 action: "SUPPLIER_CREATED",
-                entity: "Supplier",
+                entity: "AdminSupplier",
                 entityId: supplier.id,
                 ip: req.ip || "127.0.0.1",
             },
@@ -134,7 +168,7 @@ export async function createSupplier(req: Request, res: Response) {
 
         res.status(201).json({
             ...supplier,
-            linkedCustomers: supplier.linkedCustomers.map((sc: any) => ({
+            linkedCustomers: supplier.linkedCustomers.map((sc) => ({
                 id: sc.customer.id,
                 fullName: sc.customer.fullName,
                 email: sc.customer.email,
@@ -161,7 +195,7 @@ export async function updateSupplier(req: Request, res: Response) {
         if (sector !== undefined) updateData.sector = sector;
         if (address !== undefined) updateData.address = address;
 
-        const supplier = await (prisma as any).supplier.update({
+        const supplier = await prisma.adminSupplier.update({
             where: { id },
             data: updateData,
             include: {
@@ -175,7 +209,7 @@ export async function updateSupplier(req: Request, res: Response) {
 
         res.json({
             ...supplier,
-            linkedCustomers: supplier.linkedCustomers.map((sc: any) => ({
+            linkedCustomers: supplier.linkedCustomers.map((sc) => ({
                 id: sc.customer.id,
                 fullName: sc.customer.fullName,
                 email: sc.customer.email,
@@ -193,14 +227,14 @@ export async function updateSupplier(req: Request, res: Response) {
 export async function deleteSupplier(req: Request, res: Response) {
     try {
         const { id } = req.params;
-        await (prisma as any).supplier.delete({ where: { id } });
+        await prisma.adminSupplier.delete({ where: { id } });
 
         await prisma.auditLog.create({
             data: {
                 actorId: (req as any).user.id,
                 role: "ADMIN",
                 action: "SUPPLIER_DELETED",
-                entity: "Supplier",
+                entity: "AdminSupplier",
                 entityId: id,
                 ip: req.ip || "127.0.0.1",
             },
@@ -223,7 +257,7 @@ export async function linkCustomerToSupplier(req: Request, res: Response) {
 
         if (!customerId) return res.status(400).json({ error: "customerId required" });
 
-        await (prisma as any).supplierCustomer.upsert({
+        await prisma.adminSupplierCustomer.upsert({
             where: { supplierId_customerId: { supplierId, customerId } },
             create: { supplierId, customerId },
             update: {},
@@ -243,7 +277,7 @@ export async function unlinkCustomerFromSupplier(req: Request, res: Response) {
     try {
         const { id: supplierId, customerId } = req.params;
 
-        await (prisma as any).supplierCustomer.deleteMany({
+        await prisma.adminSupplierCustomer.deleteMany({
             where: { supplierId, customerId },
         });
 
@@ -261,14 +295,12 @@ export async function getSuppliersByCustomer(req: Request, res: Response) {
     try {
         const { customerId } = req.params;
 
-        const links = await (prisma as any).supplierCustomer.findMany({
+        const links = await prisma.adminSupplierCustomer.findMany({
             where: { customerId },
-            include: {
-                supplier: true,
-            },
+            include: { supplier: true },
         });
 
-        res.json(links.map((l: any) => l.supplier));
+        res.json(links.map((l) => l.supplier));
     } catch (error) {
         console.error("Error fetching suppliers by customer:", error);
         res.status(500).json({ error: "Failed to fetch suppliers" });

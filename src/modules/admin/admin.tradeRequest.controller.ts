@@ -85,6 +85,7 @@ export async function getAdminTradeRequests(req: Request, res: Response) {
                 accountNumber: r.supplierAccountNumber,
                 sector: r.supplierSector,
                 address: r.supplierAddress,
+                invoiceUrl: r.invoiceUrl,
             },
         }));
 
@@ -393,6 +394,7 @@ export async function getAdminTradeRequest(req: Request, res: Response) {
                 accountNumber: (request as any).supplierAccountNumber,
                 sector: (request as any).supplierSector,
                 address: (request as any).supplierAddress,
+                invoiceUrl: (request as any).invoiceUrl,
             },
             linkedTrade: linkedTrade
                 ? {

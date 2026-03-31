@@ -16,6 +16,7 @@ import customerPortalRoutes from "./customer/customer.portal.routes";
 import bankRoutes from "./bank/bank.routes";
 import chatRoutes from "./chat/chat.routes";
 import uploadRoutes from "./uploads/upload.routes";
+import supplierRoutes from "./suppliers/supplier.routes";
 
 const router = Router();
 
@@ -36,5 +37,6 @@ router.use("/fx", fxRoutes);
 router.use("/bank", bankRoutes);
 router.use("/chat", chatRoutes);
 router.use("/upload", uploadRoutes);
+router.use("/suppliers", supplierRoutes);
 
 export default router;
