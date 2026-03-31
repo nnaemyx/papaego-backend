@@ -13,7 +13,8 @@ import {
 import {
     getDashboardStats,
     getAgentTrades,
-    getAgentTrade
+    getAgentTrade,
+    getAgentCommissions
 } from "./agent.controller";
 import {
     getAgentCustomers,
@@ -41,6 +42,7 @@ router.use(requireRole("AGENT"));
 
 // Dashboard
 router.get("/dashboard/stats", getDashboardStats);
+router.get("/commissions", getAgentCommissions);
 
 // Profile
 import { getAgentProfile, updateAgentProfile, updateAgentPassword, uploadProfileAvatar } from "./agent.profile.controller";
