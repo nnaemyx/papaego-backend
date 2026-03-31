@@ -1,13 +1,3 @@
-/*
-  Warnings:
-
-  - You are about to drop the column `businessName` on the `Supplier` table. All the data in the column will be lost.
-  - You are about to drop the column `sector` on the `Supplier` table. All the data in the column will be lost.
-  - You are about to drop the `SupplierCustomer` table. If the table is not empty, all the data it contains will be lost.
-  - Added the required column `beneficiaryName` to the `Supplier` table without a default value. This is not possible if the table is not empty.
-  - Added the required column `customerId` to the `Supplier` table without a default value. This is not possible if the table is not empty.
-
-*/
 -- DropForeignKey
 ALTER TABLE "ChatMessage" DROP CONSTRAINT "ChatMessage_tradeId_fkey";
 
@@ -17,31 +7,49 @@ ALTER TABLE "SupplierCustomer" DROP CONSTRAINT "SupplierCustomer_customerId_fkey
 -- DropForeignKey
 ALTER TABLE "SupplierCustomer" DROP CONSTRAINT "SupplierCustomer_supplierId_fkey";
 
--- AlterTable
-ALTER TABLE "ChatMessage" ADD COLUMN     "fileUrl" TEXT,
-ADD COLUMN     "tradeRequestId" TEXT,
+-- AlterTable (ChatMessage)
+ALTER TABLE "ChatMessage" ADD COLUMN "fileUrl" TEXT,
+ADD COLUMN "tradeRequestId" TEXT,
 ALTER COLUMN "tradeId" DROP NOT NULL;
 
--- AlterTable
-ALTER TABLE "Supplier" DROP COLUMN "businessName",
-DROP COLUMN "sector",
-ADD COLUMN     "beneficiaryName" TEXT NOT NULL,
-ADD COLUMN     "currency" TEXT,
-ADD COLUMN     "customerId" TEXT NOT NULL,
-ADD COLUMN     "iban" TEXT,
-ADD COLUMN     "routingCode" TEXT,
-ADD COLUMN     "swiftBic" TEXT,
+-- AlterTable (Supplier - Safe Migration)
+-- 1. Add new columns as NULLABLE first
+ALTER TABLE "Supplier" 
+ADD COLUMN "beneficiaryName" TEXT,
+ADD COLUMN "currency" TEXT,
+ADD COLUMN "customerId" TEXT,
+ADD COLUMN "iban" TEXT,
+ADD COLUMN "routingCode" TEXT,
+ADD COLUMN "swiftBic" TEXT;
+
+-- 2. Data Migration: Populate beneficiaryName from old businessName
+UPDATE "Supplier" SET "beneficiaryName" = "businessName" WHERE "beneficiaryName" IS NULL;
+
+-- 3. Data Migration: Populate customerId from the SupplierCustomer join table
+-- (This links the supplier to its correct customer before the join table is dropped)
+UPDATE "Supplier" s
+SET "customerId" = sc."customerId"
+FROM "SupplierCustomer" sc
+WHERE sc."supplierId" = s.id;
+
+-- 4. Finalize Supplier table: Set NOT NULL and drop old columns
+-- We set customerId to NOT NULL only after the migration above
+ALTER TABLE "Supplier" 
+ALTER COLUMN "beneficiaryName" SET NOT NULL,
+ALTER COLUMN "customerId" SET NOT NULL,
 ALTER COLUMN "bankName" DROP NOT NULL,
-ALTER COLUMN "accountNumber" DROP NOT NULL;
+ALTER COLUMN "accountNumber" DROP NOT NULL,
+DROP COLUMN "businessName",
+DROP COLUMN "sector";
 
--- AlterTable
-ALTER TABLE "TradeRequest" ADD COLUMN     "invoiceUrl" TEXT,
-ADD COLUMN     "supplierId" TEXT;
+-- AlterTable (TradeRequest)
+ALTER TABLE "TradeRequest" ADD COLUMN "invoiceUrl" TEXT,
+ADD COLUMN "supplierId" TEXT;
 
--- DropTable
+-- DropTable (Old join table)
 DROP TABLE "SupplierCustomer";
 
--- CreateTable
+-- CreateTable (New Admin tables)
 CREATE TABLE "AdminSupplier" (
     "id" TEXT NOT NULL,
     "businessName" TEXT NOT NULL,
@@ -55,7 +63,7 @@ CREATE TABLE "AdminSupplier" (
     CONSTRAINT "AdminSupplier_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
+-- CreateTable (New Join table for Admin Suppliers)
 CREATE TABLE "AdminSupplierCustomer" (
     "id" TEXT NOT NULL,
     "supplierId" TEXT NOT NULL,
@@ -74,11 +82,11 @@ ALTER TABLE "ChatMessage" ADD CONSTRAINT "ChatMessage_tradeId_fkey" FOREIGN KEY 
 -- AddForeignKey
 ALTER TABLE "ChatMessage" ADD CONSTRAINT "ChatMessage_tradeRequestId_fkey" FOREIGN KEY ("tradeRequestId") REFERENCES "TradeRequest"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
--- AddForeignKey
+-- AddForeignKey (New direct relation for Supplier)
 ALTER TABLE "Supplier" ADD CONSTRAINT "Supplier_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- AddForeignKey
+-- AddForeignKey (New direct relation for AdminSupplierCustomer)
 ALTER TABLE "AdminSupplierCustomer" ADD CONSTRAINT "AdminSupplierCustomer_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "AdminSupplier"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- AddForeignKey
+-- AddForeignKey (New direct relation for AdminSupplierCustomer)
 ALTER TABLE "AdminSupplierCustomer" ADD CONSTRAINT "AdminSupplierCustomer_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
