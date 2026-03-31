@@ -24,11 +24,30 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// Sanitize and define allowed origins
+const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "");
+const allowedOrigins = [
+    frontendUrl,
+    frontendUrl.includes("www.") ? frontendUrl.replace("www.", "") : frontendUrl.replace("://", "://www."),
+    "http://localhost:3000"
+];
+
 const corsOptions = {
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean | string[]) => void) => {
+        // Allow requests with no origin (like mobile apps or curl)
+        if (!origin) return callback(null, true);
+        
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error("Not allowed by CORS"));
+        }
+    },
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-    credentials: true
+    credentials: true,
+    optionsSuccessStatus: 200 // Some legacy browsers crash on 204
 };
+
 app.use(cors(corsOptions));
 app.use(express.json({
     verify: (req: any, res, buf) => {
