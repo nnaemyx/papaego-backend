@@ -309,7 +309,9 @@ export async function getAgentCommissions(req: Request, res: Response) {
             date: c.createdAt.toLocaleDateString(),
             amount: `₦${Number(c.amount).toLocaleString()}`,
             status: c.status,
-            tradeAmount: `${c.trade.amount} ${c.trade.sendCurrency}`,
+            tradeAmount: c.trade 
+                ? `${Number(c.trade.amount).toLocaleString()} ${c.trade.sendCurrency}`
+                : 'N/A',
             createdAt: c.createdAt
         }));
 
