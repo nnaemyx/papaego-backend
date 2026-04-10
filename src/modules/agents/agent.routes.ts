@@ -14,7 +14,9 @@ import {
     getDashboardStats,
     getAgentTrades,
     getAgentTrade,
-    getAgentCommissions
+    getAgentCommissions,
+    getFxRatesForAgent,
+    getAgentReferral
 } from "./agent.controller";
 import {
     getAgentCustomers,
@@ -51,6 +53,12 @@ router.put("/profile", updateAgentProfile);
 router.put("/profile/password", updateAgentPassword);
 router.post("/profile/avatar", uploadToCloudinary.single("avatar"), uploadProfileAvatar);
 
+// Referral
+router.get("/referral", getAgentReferral);
+
+// FX Rates (read admin-configured rates)
+router.get("/fx-rates", getFxRatesForAgent);
+
 // Customers — static routes MUST come before parameterized /:id routes
 router.get("/customers", getAgentCustomers);
 router.get("/customers/stats", getAgentCustomerStats); // Must be before /:id
@@ -80,3 +88,4 @@ router.post("/trades/:id/confirm-payout", confirmPayout);
 router.post("/trades/:id/cancel", cancelTrade);
 
 export default router;
+

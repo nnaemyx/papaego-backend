@@ -14,16 +14,6 @@ const app = express();
 // Security: Set security-related HTTP headers
 app.use(helmet());
 
-// Global Rate Limiter: Prevent general DDoS/abuse (100 req per 15 min per IP)
-const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: "Too many requests, please try again later." }
-});
-app.use(limiter);
-
 // Sanitize and define allowed origins
 const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "");
 const allowedOrigins = [
@@ -48,7 +38,19 @@ const corsOptions = {
     optionsSuccessStatus: 200 // Some legacy browsers crash on 204
 };
 
+// Apply CORS *before* rate limiter so that 429 responses still have CORS headers
 app.use(cors(corsOptions));
+
+// Global Rate Limiter: Prevent general DDoS/abuse (500 req per 15 min per IP)
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 500, // Increased for dashboard usage
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many requests, please try again later." }
+});
+app.use(limiter);
+
 app.use(express.json({
     verify: (req: any, res, buf) => {
         req.rawBody = buf.toString();

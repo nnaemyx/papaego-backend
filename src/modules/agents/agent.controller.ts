@@ -213,3 +213,72 @@ export async function getAgentCommissions(req: Request, res: Response) {
         res.status(500).json({ error: "Failed to fetch commissions" });
     }
 }
+
+/**
+ * Get admin-configured FX rates (read-only view for agents)
+ * GET /api/agent/fx-rates
+ */
+export async function getFxRatesForAgent(req: Request, res: Response) {
+    try {
+        const config = await prisma.systemConfig.findUnique({ where: { key: "fx_rates" } });
+        const rates = config && Array.isArray(config.value) ? config.value : [];
+        res.json(rates);
+    } catch (error) {
+        console.error("Error fetching FX rates for agent:", error);
+        res.status(500).json({ error: "Failed to fetch FX rates" });
+    }
+}
+
+/**
+ * Get referral info for the logged-in agent
+ * GET /api/agent/referral
+ */
+export async function getAgentReferral(req: Request, res: Response) {
+    try {
+        const agentId = (req as any).user.id;
+
+        const user = await prisma.user.findUnique({
+            where: { id: agentId },
+            include: { agentProfile: true }
+        });
+
+        if (!user || !user.agentProfile) {
+            return res.status(404).json({ error: "Agent profile not found" });
+        }
+
+        // Referral code derived from licenseId (stable, readable)
+        const referralCode = user.agentProfile.licenseId
+            ? `REF-${user.agentProfile.licenseId}`
+            : `REF-${agentId.slice(0, 8).toUpperCase()}`;
+
+        const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+        const referralLink = `${frontendUrl}/customer-auth/register?ref=${encodeURIComponent(referralCode)}`;
+
+        // Count customers referred via this code (customers who have this agent's referral code in their User record)
+        // Since we don't track referral at customer level yet, we approximate from trades
+        const customerIds = await prisma.trade.findMany({
+            where: { agentId },
+            select: { customerId: true },
+            distinct: ["customerId"]
+        });
+
+        const totalReferred = customerIds.length;
+
+        // Commission earned from trades
+        const commissions = await prisma.commission.findMany({
+            where: { agentId, type: "REFERRAL" },
+        });
+        const commissionFromReferrals = commissions.reduce((sum, c) => sum + Number(c.amount), 0);
+
+        res.json({
+            referralCode,
+            referralLink,
+            totalReferred,
+            commissionFromReferrals: `₦${commissionFromReferrals.toLocaleString()}`,
+            referredCustomers: [],
+        });
+    } catch (error) {
+        console.error("Error fetching agent referral info:", error);
+        res.status(500).json({ error: "Failed to fetch referral info" });
+    }
+}

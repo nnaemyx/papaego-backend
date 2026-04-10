@@ -873,3 +873,120 @@ export async function deleteTransaction(req: Request, res: Response) {
         res.status(500).json({ error: "Failed to delete transaction" });
     }
 }
+
+// ── FX Rates CRUD (stored in SystemConfig as a JSON blob) ────────────────────
+
+const FX_RATES_KEY = "fx_rates";
+
+interface StoredFxRate {
+    pair: string;
+    baseCurrency: string;
+    quoteCurrency: string;
+    buy: number;
+    sell: number;
+    lastUpdated: string;
+    isActive: boolean;
+}
+
+async function loadRates(): Promise<StoredFxRate[]> {
+    const config = await prisma.systemConfig.findUnique({ where: { key: FX_RATES_KEY } });
+    if (!config) return [];
+    const data = config.value as any;
+    return Array.isArray(data) ? data : [];
+}
+
+async function saveRates(rates: StoredFxRate[]): Promise<void> {
+    await prisma.systemConfig.upsert({
+        where: { key: FX_RATES_KEY },
+        update: { value: rates as any },
+        create: { key: FX_RATES_KEY, value: rates as any },
+    });
+}
+
+/** GET /admin/fx-rates — returns all FX rates */
+export async function getFxRates(req: Request, res: Response) {
+    try {
+        const rates = await loadRates();
+        res.json(rates);
+    } catch (error) {
+        console.error("Error fetching FX rates:", error);
+        res.status(500).json({ error: "Failed to fetch FX rates" });
+    }
+}
+
+/** POST /admin/fx-rates — create or update a single rate pair */
+export async function upsertFxRate(req: Request, res: Response) {
+    try {
+        const { pair, baseCurrency, quoteCurrency, buy, sell } = req.body;
+        if (!pair || !baseCurrency || !quoteCurrency || buy == null || sell == null) {
+            return res.status(400).json({ error: "pair, baseCurrency, quoteCurrency, buy, and sell are required" });
+        }
+
+        const rates = await loadRates();
+        const existing = rates.findIndex(r => r.pair === pair);
+        const updated: StoredFxRate = {
+            pair,
+            baseCurrency,
+            quoteCurrency,
+            buy: Number(buy),
+            sell: Number(sell),
+            lastUpdated: new Date().toISOString(),
+            isActive: true,
+        };
+
+        if (existing >= 0) {
+            rates[existing] = updated;
+        } else {
+            rates.push(updated);
+        }
+
+        await saveRates(rates);
+        res.json(updated);
+    } catch (error) {
+        console.error("Error upserting FX rate:", error);
+        res.status(500).json({ error: "Failed to upsert FX rate" });
+    }
+}
+
+/** PATCH /admin/fx-rates/:pair — update a rate by pair (e.g. USD%2FNGN) */
+export async function updateFxRate(req: Request, res: Response) {
+    try {
+        const pair = decodeURIComponent(req.params.pair);
+        const { buy, sell, baseCurrency, quoteCurrency } = req.body;
+
+        const rates = await loadRates();
+        const idx = rates.findIndex(r => r.pair === pair);
+        if (idx < 0) return res.status(404).json({ error: "Rate not found" });
+
+        if (buy != null) rates[idx].buy = Number(buy);
+        if (sell != null) rates[idx].sell = Number(sell);
+        if (baseCurrency) rates[idx].baseCurrency = baseCurrency;
+        if (quoteCurrency) rates[idx].quoteCurrency = quoteCurrency;
+        rates[idx].lastUpdated = new Date().toISOString();
+
+        await saveRates(rates);
+        res.json(rates[idx]);
+    } catch (error) {
+        console.error("Error updating FX rate:", error);
+        res.status(500).json({ error: "Failed to update FX rate" });
+    }
+}
+
+/** DELETE /admin/fx-rates/:pair — remove a rate pair */
+export async function deleteFxRate(req: Request, res: Response) {
+    try {
+        const pair = decodeURIComponent(req.params.pair);
+
+        const rates = await loadRates();
+        const filtered = rates.filter(r => r.pair !== pair);
+        if (filtered.length === rates.length) {
+            return res.status(404).json({ error: "Rate not found" });
+        }
+
+        await saveRates(filtered);
+        res.json({ success: true });
+    } catch (error) {
+        console.error("Error deleting FX rate:", error);
+        res.status(500).json({ error: "Failed to delete FX rate" });
+    }
+}

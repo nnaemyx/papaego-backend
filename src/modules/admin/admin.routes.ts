@@ -3,6 +3,13 @@ import { auth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/rbac.middleware";
 import { uploadToCloudinary } from "../../middlewares/upload.middleware";
 import {
+    getProductivityReport,
+    getKYAReport,
+    getOversightReport,
+    getCorridorReport,
+    exportReport,
+} from "./admin.reports.controller";
+import {
     createAgent,
     suspendAgent,
     activateAgent,
@@ -21,6 +28,10 @@ import {
     getAdminTransaction,
     deleteTransaction,
     getFxMargin,
+    getFxRates,
+    upsertFxRate,
+    updateFxRate,
+    deleteFxRate,
 } from "./admin.controller";
 import { freezeCommission, unfreezeCommission } from "./admin.trade.controller";
 import {
@@ -92,10 +103,22 @@ router.delete("/suppliers/:id", deleteSupplier);
 router.post("/suppliers/:id/link-customer", linkCustomerToSupplier);
 router.delete("/suppliers/:id/link-customer/:customerId", unlinkCustomerFromSupplier);
 
+// ── FX Rates CRUD ─────────────────────────────────────────────────────────────
+router.get("/fx-rates", getFxRates);
+router.post("/fx-rates", upsertFxRate);
+router.patch("/fx-rates/:pair", updateFxRate);
+router.delete("/fx-rates/:pair", deleteFxRate);
+
 // ── Other ─────────────────────────────────────────────────────────────────────
 router.get("/fx-margins", getFxMargin);
 router.post("/fx-margins", setFxMargin);
 router.post("/overrides/:id/approve", approveOverride);
 
+// ── Reports ───────────────────────────────────────────────────────────────────
+router.get("/reports/productivity", getProductivityReport);
+router.get("/reports/kya", getKYAReport);
+router.get("/reports/oversight", getOversightReport);
+router.get("/reports/corridors", getCorridorReport);
+router.get("/reports/export", exportReport);
+
 export default router;
-// this is handled inline - just verify file exists
