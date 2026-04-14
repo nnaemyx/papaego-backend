@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { createNotification } from "../notifications/notification.service";
-import { sendPaymentDetailsEmail } from "../../services/email.service";
+import { sendPaymentDetailsEmail, sendRateQuotedEmail } from "../../services/email.service";
 
 /**
  * GET /api/admin/trade-requests
@@ -232,13 +232,9 @@ export async function processTradeRequest(req: Request, res: Response) {
             return res.status(400).json({ error: "Request already processed" });
         }
 
-        // Assign to system agent or admin if no agent
+        // Process the trade without requiring an agent (Admins handle this now)
         const adminUser = await prisma.user.findFirst({ where: { role: "ADMIN" } });
         const agentId = request.agentId || adminUser?.id;
-
-        if (!agentId) {
-            return res.status(400).json({ error: "No agent available to process this request" });
-        }
 
         // Resolve countryId (optional — Trade.countryId is now nullable)
         const firstCountry = await prisma.country.findFirst();
@@ -445,5 +441,74 @@ export async function deleteTradeRequest(req: Request, res: Response) {
     } catch (error) {
         console.error("Error deleting trade request:", error);
         res.status(500).json({ error: "Failed to delete trade request" });
+    }
+}
+
+/**
+ * PATCH /api/admin/trade-requests/:id/set-rate
+ * Admin sets the FX rate for a trade request
+ */
+export async function setTradeRequestRate(req: Request, res: Response) {
+    try {
+        const { id } = req.params;
+        const { fxRate, payoutAmount } = req.body;
+
+        if (!fxRate || !payoutAmount) {
+            return res.status(400).json({ error: "fxRate and payoutAmount are required" });
+        }
+
+        const request = await prisma.tradeRequest.findUnique({
+            where: { id },
+            include: { customer: true },
+        });
+
+        if (!request) return res.status(404).json({ error: "Trade request not found" });
+
+        const updated = await prisma.tradeRequest.update({
+            where: { id },
+            data: {
+                fxRate: Number(fxRate),
+                payoutAmount: Number(payoutAmount),
+                status: "QUOTED", // Optional: Update status or leave as PENDING
+            },
+        });
+
+        // Notify customer
+        if (request.customer?.userId) {
+            await createNotification(
+                request.customer.userId,
+                "Exchange Rate Set",
+                `The exchange rate for your trade request has been set to 1 ${request.sendCurrency === 'NGN' ? request.receiveCurrency : request.sendCurrency} = ${fxRate} NGN.`,
+                "SUCCESS"
+            );
+            
+            await sendRateQuotedEmail({
+                customerEmail: request.customer.email as string,
+                customerName: request.customer.fullName as string,
+                tradeId: id.slice(0, 8).toUpperCase(),
+                amount: String(request.amount),
+                currency: request.sendCurrency,
+                fxRate: String(fxRate),
+                payoutAmount: String(payoutAmount),
+                receiveCurrency: request.receiveCurrency,
+                dashboardLink: `${process.env.FRONTEND_URL || "http://localhost:3000"}/customer/trade-requests/${id}`,
+            });
+        }
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: "ADMIN",
+                action: "TRADE_REQUEST_RATE_SET",
+                entity: "TradeRequest",
+                entityId: id,
+                ip: req.ip || "127.0.0.1",
+            },
+        });
+
+        res.json(updated);
+    } catch (error) {
+        console.error("Error setting trade request rate:", error);
+        res.status(500).json({ error: "Failed to set exchange rate" });
     }
 }

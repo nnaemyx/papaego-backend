@@ -723,3 +723,61 @@ PapaEgo Support Team
     throw new Error("Failed to send message email");
   }
 }
+
+interface RateQuotedParams {
+  customerEmail: string;
+  customerName: string;
+  tradeId: string;
+  amount: string;
+  currency: string;
+  fxRate: string;
+  payoutAmount: string;
+  receiveCurrency: string;
+  dashboardLink: string;
+}
+
+/**
+ * Notifies a customer that the admin has set the exchange rate for their trade request
+ */
+export async function sendRateQuotedEmail({
+  customerEmail,
+  customerName,
+  tradeId,
+  amount,
+  currency,
+  fxRate,
+  payoutAmount,
+  receiveCurrency,
+  dashboardLink,
+}: RateQuotedParams) {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: 'PapaEgo <updates@papaego.com>',
+      to: customerEmail,
+      subject: `Exchange Rate Set for Trade #${tradeId}`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px;">
+          <h2>Exchange Rate Confirmed ✅</h2>
+          <p>Hello ${customerName},</p>
+          <p>Our team has set and confirmed the exchange rate for your trade request <strong>#${tradeId}</strong>.</p>
+          
+          <div style="background: #f7f8f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 0 0 10px 0;"><strong>Send Amount:</strong> ${amount} ${currency}</p>
+            <p style="margin: 0 0 10px 0;"><strong>Exchange Rate:</strong> 1 ${currency === 'NGN' ? receiveCurrency : currency} = ${fxRate} NGN</p>
+            <p style="margin: 0;"><strong>Estimated Payout:</strong> ${payoutAmount} ${receiveCurrency}</p>
+          </div>
+
+          <div style="margin: 20px 0;">
+            <a href="${dashboardLink}" style="background: #c9a227; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">View Trade Request</a>
+          </div>
+          <p>Thank you for choosing PapaEgo.</p>
+        </div>
+      `
+    });
+    if (error) throw error;
+    return { success: true, messageId: data?.id };
+  } catch (error) {
+    console.error("Error sending rate quoted email:", error);
+    return { success: false };
+  }
+}
