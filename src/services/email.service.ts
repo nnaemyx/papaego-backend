@@ -3,6 +3,97 @@ import { Resend } from "resend";
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 
+interface ResetPasswordParams {
+  email: string;
+  userName: string;
+  resetUrl: string;
+}
+
+/**
+ * Sends a password reset email with a secure token link
+ */
+export async function sendResetPasswordEmail({
+  email,
+  userName,
+  resetUrl,
+}: ResetPasswordParams) {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: 'PapaEgo <security@papaego.com>',
+      to: email,
+      subject: "Reset Your PapaEgo Password",
+      text: `
+Hello ${userName},
+
+We received a request to reset your PapaEgo account password.
+
+Click the link below to set a new password:
+${resetUrl}
+
+This link will expire in 1 hour. If you didn't request this, please ignore this email — your password will remain unchanged.
+
+© ${new Date().getFullYear()} PapaEgo. All rights reserved.
+      `,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          </head>
+          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Ubuntu, sans-serif; background-color: #f6f9fc; margin: 0; padding: 0;">
+            <div style="background-color: #ffffff; max-width: 600px; margin: 0 auto; margin-bottom: 64px; padding: 20px 0 48px;">
+              <h1 style="color: #c9a227; font-size: 24px; font-weight: bold; padding: 0 48px; margin-bottom: 24px;">
+                PapaEgo
+              </h1>
+              
+              <div style="padding: 0 48px;">
+                <p style="color: #333; font-size: 16px; line-height: 24px; margin-bottom: 16px;">
+                  Hello ${userName},
+                </p>
+                
+                <p style="color: #333; font-size: 16px; line-height: 24px; margin-bottom: 16px;">
+                  We received a request to reset the password for your PapaEgo account. Click the button below to set a new password:
+                </p>
+                
+                <div style="text-align: center; margin: 32px 0;">
+                  <a href="${resetUrl}" style="background-color: #c9a227; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 6px; font-size: 16px; font-weight: 600; display: inline-block;">
+                    Reset Password
+                  </a>
+                </div>
+                
+                <div style="background-color: #fff8e1; border-left: 4px solid #c9a227; padding: 12px 16px; border-radius: 4px; margin: 24px 0;">
+                  <p style="color: #6b7078; font-size: 14px; line-height: 20px; margin: 0;">
+                    ⏰ This link will expire in <strong>1 hour</strong>. If you didn't request a password reset, you can safely ignore this email.
+                  </p>
+                </div>
+                
+                <p style="color: #666; font-size: 14px; line-height: 20px; margin-top: 24px;">
+                  Or copy and paste this URL into your browser:<br>
+                  <span style="color: #c9a227; word-break: break-all;">${resetUrl}</span>
+                </p>
+              </div>
+              
+              <div style="border-top: 1px solid #e6ebf1; margin-top: 48px; padding-top: 24px;">
+                <p style="color: #8898aa; font-size: 12px; line-height: 16px; padding: 0 48px; margin: 0;">
+                  © ${new Date().getFullYear()} PapaEgo. All rights reserved.<br>
+                  Empowering global financial transactions.
+                </p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+    if (error) throw error;
+    console.log("✅ Reset password email sent:", data?.id);
+    return { success: true, messageId: data?.id };
+  } catch (error) {
+    console.error("❌ Error sending reset password email:", error);
+    throw new Error("Failed to send reset password email");
+  }
+}
+
 interface AgentInvitationParams {
   email: string;
   agentName: string;

@@ -50,8 +50,19 @@ export const createSupplier = async (req: Request, res: Response) => {
             address
         } = req.body;
 
-        if (!beneficiaryName) {
-            return res.status(400).json({ error: "Beneficiary name is required" });
+        // Check for duplicate supplier under this customer
+        const duplicate = await prisma.supplier.findFirst({
+            where: {
+                customerId: customer.id,
+                bankName: bankName,
+                accountNumber: accountNumber
+            }
+        });
+
+        if (duplicate) {
+            return res.status(409).json({
+                error: "A supplier with this bank name and account number already exists for this customer."
+            });
         }
 
         const supplier = await prisma.supplier.create({
@@ -95,6 +106,25 @@ export const updateSupplier = async (req: Request, res: Response) => {
 
         if (!existing) {
             return res.status(404).json({ error: "Supplier not found or unauthorized" });
+        }
+
+        const { bankName, accountNumber } = req.body;
+        if (bankName || accountNumber) {
+            // Check if any other supplier has the same bankName and accountNumber
+            const duplicate = await prisma.supplier.findFirst({
+                where: {
+                    customerId: customer.id,
+                    bankName: bankName !== undefined ? bankName : existing.bankName,
+                    accountNumber: accountNumber !== undefined ? accountNumber : existing.accountNumber,
+                    NOT: { id }
+                }
+            });
+
+            if (duplicate) {
+                return res.status(409).json({
+                    error: "A supplier with this bank name and account number already exists for this customer."
+                });
+            }
         }
 
         const updated = await prisma.supplier.update({
