@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
+import { sendCustomerVerificationEmail, sendKycRejectionEmail } from "../../services/email.service";
 
 /**
  * GET /customer/portal/kyc-status
@@ -248,6 +249,21 @@ export async function approveKyc(req: Request, res: Response) {
             },
         });
 
+        // Send email notification
+        try {
+            const customerEmail = customer.email || (await prisma.user.findUnique({ where: { id: customer.userId }, select: { email: true } }))?.email;
+            if (customerEmail) {
+                const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+                await sendCustomerVerificationEmail({
+                    email: customerEmail,
+                    customerName: customer.fullName,
+                    loginLink: `${frontendUrl}/customer-auth/signin`
+                });
+            }
+        } catch (emailErr) {
+            console.error("❌ Failed to send KYC approval email:", emailErr);
+        }
+
         res.json({ success: true, status: "APPROVED" });
     } catch (error) {
         console.error("Error approving KYC:", error);
@@ -311,6 +327,22 @@ export async function rejectKyc(req: Request, res: Response) {
                 type: "WARNING",
             },
         });
+
+        // Send email notification
+        try {
+            const customerEmail = customer.email || (await prisma.user.findUnique({ where: { id: customer.userId }, select: { email: true } }))?.email;
+            if (customerEmail) {
+                const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+                await sendKycRejectionEmail({
+                    email: customerEmail,
+                    customerName: customer.fullName,
+                    reason: reason.trim(),
+                    loginLink: `${frontendUrl}/customer-auth/signin`
+                });
+            }
+        } catch (emailErr) {
+            console.error("❌ Failed to send KYC rejection email:", emailErr);
+        }
 
         res.json({ success: true, status: "REJECTED" });
     } catch (error) {

@@ -318,6 +318,83 @@ Welcome aboard!
   }
 }
 
+interface KycRejectionParams {
+  email: string;
+  customerName: string;
+  reason: string;
+  loginLink: string;
+}
+
+/**
+ * Sends a KYC rejection email with the reason and a link to re-upload
+ */
+export async function sendKycRejectionEmail({
+  email,
+  customerName,
+  reason,
+  loginLink,
+}: KycRejectionParams) {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: 'PapaEgo Compliance <compliance@papaego.com>',
+      to: email,
+      subject: "Action Required: Update Your PapaEgo Verification Documents",
+      text: `
+Hello ${customerName},
+
+Thank you for submitting your identity verification documents to PapaEgo.
+
+Upon review, our compliance team was unable to approve your KYC verification for the following reason:
+${reason}
+
+To continue using PapaEgo and unlock cross-border trade capabilities, please log in to your dashboard and re-upload the correct documents:
+${loginLink}
+
+If you have any questions, please contact our support team.
+
+© ${new Date().getFullYear()} PapaEgo. All rights reserved.
+      `,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <body style="font-family: -apple-system, sans-serif; background-color: #f6f9fc; margin: 0; padding: 20px;">
+            <div style="background-color: #ffffff; max-width: 600px; margin: 0 auto; padding: 24px; border-radius: 8px;">
+              <h2 style="color: #e05555; margin-bottom: 24px;">Action Required: Update Verification Documents ⚠️</h2>
+              <p style="color: #333; font-size: 16px;">Hello ${customerName},</p>
+              <p style="color: #333; font-size: 16px;">Thank you for submitting your identity verification documents to PapaEgo.</p>
+              <p style="color: #333; font-size: 16px;">Upon review, our compliance team was unable to approve your KYC verification for the following reason:</p>
+              
+              <div style="background-color: #fff5f5; border-left: 4px solid #e05555; padding: 16px; border-radius: 4px; margin: 24px 0;">
+                <p style="color: #e05555; font-size: 14px; font-weight: 600; margin: 0 0 4px 0;">Reason for Rejection</p>
+                <p style="color: #333; font-size: 15px; margin: 0; line-height: 22px;">${reason}</p>
+              </div>
+
+              <p style="color: #333; font-size: 16px;">To continue using PapaEgo and unlock cross-border trade capabilities, please click the button below to log in and re-upload the correct documents:</p>
+              
+              <div style="text-align: center; margin: 32px 0;">
+                <a href="${loginLink}" style="background-color: #c9a227; color: #ffffff; text-decoration: none; padding: 12px 32px; border-radius: 6px; font-weight: bold; display: inline-block;">
+                  Upload Documents
+                </a>
+              </div>
+              
+              <p style="color: #666; font-size: 14px;">If you have any questions or require assistance, please reply to this email to contact our support team.</p>
+              
+              <hr style="border: 0; border-top: 1px solid #e6ebf1; margin: 32px 0;" />
+              <p style="color: #8898aa; font-size: 12px;">© ${new Date().getFullYear()} PapaEgo. All rights reserved.</p>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+    if (error) throw error;
+    console.log("✅ KYC rejection email sent successfully to:", email);
+    return { success: true, messageId: data?.id };
+  } catch (error) {
+    console.error("❌ Error sending KYC rejection email:", error);
+    return { success: false };
+  }
+}
+
 interface AgentSuspensionParams {
   email: string;
   agentName: string;
