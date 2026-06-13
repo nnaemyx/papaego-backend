@@ -134,7 +134,23 @@ export async function getCustomerTradeRequests(req: Request, res: Response) {
             prisma.tradeRequest.count({ where: { customerId } })
         ]);
 
-        res.json({ requests, total, page: Number(page), limit: Number(limit) });
+        // Fetch linked trades to find their IDs
+        const requestIds = requests.map((r) => r.id);
+        const linkedTrades = await prisma.trade.findMany({
+            where: { tradeRequestId: { in: requestIds } },
+            select: { id: true, tradeRequestId: true },
+        });
+
+        const tradeMap = new Map(
+            linkedTrades.map((t) => [t.tradeRequestId, t.id])
+        );
+
+        const requestsWithLinkedTrade = requests.map((r) => ({
+            ...r,
+            linkedTradeId: tradeMap.get(r.id) || null,
+        }));
+
+        res.json({ requests: requestsWithLinkedTrade, total, page: Number(page), limit: Number(limit) });
     } catch (error) {
         console.error("Error fetching customer trade requests:", error);
         res.status(500).json({ error: "Failed to fetch trade requests" });
@@ -158,7 +174,15 @@ export async function getTradeRequestById(req: Request, res: Response) {
             return res.status(404).json({ error: "Trade request not found" });
         }
 
-        res.json(request);
+        const linkedTrade = await prisma.trade.findFirst({
+            where: { tradeRequestId: id },
+            select: { id: true },
+        });
+
+        res.json({
+            ...request,
+            linkedTradeId: linkedTrade?.id || null,
+        });
     } catch (error) {
         console.error("Error fetching trade request by ID:", error);
         res.status(500).json({ error: "Failed to fetch trade request" });

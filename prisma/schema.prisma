@@ -56,6 +56,15 @@ enum CommissionStatus {
   DISPUTED
 }
 
+enum KycStatus {
+  NOT_SUBMITTED
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  RESUBMITTED
+}
+
 // ---------- CORE ----------
 
 model User {
@@ -66,8 +75,10 @@ model User {
   password  String
   firstName String?
   lastName  String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
+  isActive              Boolean   @default(true)
+  resetPasswordToken    String?
+  resetPasswordExpires  DateTime?
+  createdAt             DateTime  @default(now())
 
   agentProfile       AgentProfile?
   customer           Customer?
@@ -139,6 +150,10 @@ model Customer {
   governmentIdUrl   String?
   proofOfAddressUrl String?
   verified          Boolean   @default(false)
+  kycStatus         KycStatus @default(NOT_SUBMITTED)
+  kycRejectionReason String?
+  kycReviewedAt     DateTime?
+  kycReviewedBy     String?
   createdAt         DateTime  @default(now())
 
   // Referral attribution (no FK — agent may be deleted later)

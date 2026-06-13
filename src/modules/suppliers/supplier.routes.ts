@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { auth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/rbac.middleware";
+import { validate } from "../../middlewares/validate.middleware";
+import { supplierCreateSchema, supplierUpdateSchema } from "./supplier.schema";
 import {
     getSuppliers,
     createSupplier,
@@ -16,8 +18,8 @@ router.use(requireRole("CUSTOMER"));
 
 // Supplier routes
 router.get("/", getSuppliers);
-router.post("/", createSupplier);
-router.put("/:id", updateSupplier);
+router.post("/", validate(supplierCreateSchema), createSupplier);
+router.put("/:id", validate(supplierUpdateSchema), updateSupplier);
 router.delete("/:id", deleteSupplier);
 
 export default router;

@@ -55,10 +55,14 @@ import {
     setTradeRequestRate,
 } from "./admin.tradeRequest.controller";
 import { uploadTradeReceipt } from "./admin.receipt.controller";
-import {
     getAdminTurnoverStats,
     updateTurnoverConfig,
 } from "../trades/negotiation.controller";
+import {
+    startKycReview,
+    approveKyc,
+    rejectKyc,
+} from "../customer/customer.kyc.controller";
 
 const router = Router();
 
@@ -80,6 +84,11 @@ router.get("/agents/:id/transactions", getAgentTransactions);
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 router.get("/dashboard/stats", getDashboardStats);
+
+// ── KYC Management ───────────────────────────────────────────────────────────
+router.patch("/customers/:id/kyc/review", startKycReview);
+router.patch("/customers/:id/kyc/approve", approveKyc);
+router.patch("/customers/:id/kyc/reject", rejectKyc);
 
 // ── Transactions ─────────────────────────────────────────────────────────────
 router.get("/transactions", listAllTrades);

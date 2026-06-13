@@ -5,6 +5,7 @@ import prisma from "../../config/db";
 import { customerSignup, uploadCustomerDocument } from "./customer.signup.controller";
 import { createTradeRequest, getCustomerTradeRequests, getTradeRequestById } from "./customer.request.controller";
 import { upsertBankDetails, getBankDetails } from "./customer.bank.controller";
+import { getKycStatus, resubmitKyc } from "./customer.kyc.controller";
 import { uploadToCloudinary } from "../../middlewares/upload.middleware";
 import { sendReceiptUploadedEmail } from "../../services/email.service";
 import {
@@ -63,7 +64,10 @@ router.get("/me", async (req: Request, res: Response) => {
                 bankDetails: true
             },
         });
-        res.json(fullCustomer);
+        res.json({
+            ...fullCustomer,
+            kycStatus: fullCustomer?.kycStatus || "NOT_SUBMITTED",
+        });
     } catch (error) {
         console.error("Error fetching customer profile:", error);
         res.status(500).json({ error: "Failed to fetch profile" });
@@ -95,6 +99,7 @@ router.get("/dashboard/stats", async (req: Request, res: Response) => {
             todayTrades: todayTrades.length,
             pendingActions: pendingTrades.length,
             kycVerified: customer.verified,
+            kycStatus: customer.kycStatus || "NOT_SUBMITTED",
         });
     } catch (error) {
         console.error("Error fetching dashboard stats:", error);
@@ -110,6 +115,23 @@ router.get("/trade-requests/:id", getTradeRequestById);
 // --- Bank Details ---
 router.post("/bank-details", upsertBankDetails);
 router.get("/bank-details", getBankDetails);
+
+// --- KYC Status ---
+router.get("/kyc-status", getKycStatus);
+router.patch("/kyc/resubmit", uploadToCloudinary.fields([
+    { name: "governmentId", maxCount: 1 },
+    { name: "proofOfAddress", maxCount: 1 },
+]), async (req: Request, res: Response, next: any) => {
+    // Convert uploaded files to URLs in req.body before passing to controller
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+    if (files?.governmentId?.[0]) {
+        req.body.governmentIdUrl = files.governmentId[0].path;
+    }
+    if (files?.proofOfAddress?.[0]) {
+        req.body.proofOfAddressUrl = files.proofOfAddress[0].path;
+    }
+    next();
+}, resubmitKyc);
 
 /**
  * GET /customer/portal/trades
@@ -177,6 +199,57 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
             orderBy: { createdAt: "asc" },
         });
 
+        // Determine stages completion
+        const status = trade.status;
+        const isUnderReview = ["REQUESTED", "INITIATED", "CUSTOMER_VERIFIED", "UNDER_REVIEW", "FLAGGED", "QUOTED", "SENT_TO_CUSTOMER", "CUSTOMER_CONFIRMED", "AWAITING_PAYMENT", "PAYMENT_UPLOADED", "PAYMENT_CONFIRMED", "COMPLETED"].includes(status);
+        const isRateAssigned = ["QUOTED", "SENT_TO_CUSTOMER", "CUSTOMER_CONFIRMED", "AWAITING_PAYMENT", "PAYMENT_UPLOADED", "PAYMENT_CONFIRMED", "COMPLETED"].includes(status);
+        const isPaymentSubmitted = ["PAYMENT_UPLOADED", "PAYMENT_CONFIRMED", "COMPLETED"].includes(status);
+        const isPaymentVerified = ["PAYMENT_CONFIRMED", "COMPLETED"].includes(status);
+        const isCompleted = status === "COMPLETED";
+
+        const findLogTime = (actions: string[]) => {
+            const log = auditLogs.find((l) => actions.includes(l.action));
+            return log ? log.createdAt.toISOString() : null;
+        };
+
+        const stages = [
+            {
+                key: "UNDER_REVIEW",
+                label: "Under Review",
+                description: "Your trade is being reviewed by our compliance team",
+                completed: isUnderReview,
+                completedAt: findLogTime(["TRADE_CREATED", "TRADE_REQUEST_PROCESSED"]) || trade.createdAt.toISOString()
+            },
+            {
+                key: "RATE_ASSIGNED",
+                label: "Rate Assigned",
+                description: "An exchange rate has been assigned and locked",
+                completed: isRateAssigned,
+                completedAt: findLogTime(["FX_QUOTED", "TRADE_REQUEST_RATE_SET", "SENT_TO_CUSTOMER", "SUPPLIER_AND_RATE_CONFIRMED"])
+            },
+            {
+                key: "PAYMENT_SUBMITTED",
+                label: "Payment Submitted",
+                description: "Your payment proof / receipt has been uploaded",
+                completed: isPaymentSubmitted,
+                completedAt: findLogTime(["PAYMENT_RECEIPT_UPLOADED"])
+            },
+            {
+                key: "PAYMENT_VERIFIED",
+                label: "Payment Verified",
+                description: "Payment verified successfully by compliance/admin",
+                completed: isPaymentVerified,
+                completedAt: findLogTime(["PAYMENT_CONFIRMED", "PAYOUT_CONFIRMED"])
+            },
+            {
+                key: "COMPLETED",
+                label: "Completed",
+                description: "Trade completed and payout confirmed",
+                completed: isCompleted,
+                completedAt: findLogTime(["PAYOUT_CONFIRMED", "TRADE_COMPLETED"])
+            }
+        ];
+
         res.json({
             id: trade.id,
             tradeId: `PE-${trade.id.slice(0, 5).toUpperCase()}`,
@@ -207,6 +280,7 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
                 action: log.action,
                 createdAt: log.createdAt.toISOString(),
             })),
+            stages
         });
     } catch (error) {
         console.error("Error fetching trade detail:", error);

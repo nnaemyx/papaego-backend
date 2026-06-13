@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import prisma from "../../config/db";
+import { passwordSchema } from "../auth/auth.schema";
 
 export async function uploadCustomerDocument(req: Request, res: Response) {
     try {
@@ -50,6 +51,13 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
 
         if (!bvn) {
             return res.status(400).json({ error: "BVN is required" });
+        }
+
+        // Validate password strength
+        const passwordResult = passwordSchema.safeParse(password);
+        if (!passwordResult.success) {
+            const errors = passwordResult.error.issues.map((e: any) => e.message);
+            return res.status(400).json({ error: errors[0], passwordErrors: errors });
         }
 
         let parsedDob: Date | null = null;
@@ -133,6 +141,7 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
                     referringAgentId,
                     referralCode: validatedReferralCode,
                     referralType,
+                    kycStatus: (governmentIdUrl && proofOfAddressUrl) ? "SUBMITTED" : "NOT_SUBMITTED",
                 },
             });
 
