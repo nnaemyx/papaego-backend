@@ -3,6 +3,11 @@ import { quoteTrade } from "./trade.controller";
 import { requireRole } from "../../middlewares/rbac.middleware";
 import { auth } from "../../middlewares/auth.middleware";
 import { updateTradeStatus } from "./trade.service";
+import {
+    getNegotiationEligibility,
+    getNegotiationStatus,
+    negotiateTrade,
+} from "./negotiation.controller";
 import prisma from "../../config/db";
 
 const router = Router();
@@ -42,6 +47,30 @@ router.post(
         });
         res.json({ suspended: true });
     }
+);
+
+// ── Negotiation Routes ───────────────────────────────────────────────────────
+
+// Global negotiation status (customer-facing: show/hide button)
+router.get(
+    "/negotiation-status",
+    auth,
+    getNegotiationStatus
+);
+
+// Check eligibility for a specific trade
+router.get(
+    "/negotiation-eligibility/:tradeId",
+    auth,
+    getNegotiationEligibility
+);
+
+// Apply negotiation to a trade (customer only, one-time)
+router.post(
+    "/:tradeId/negotiate",
+    auth,
+    requireRole("CUSTOMER"),
+    negotiateTrade
 );
 
 export default router;

@@ -17,6 +17,7 @@ import bankRoutes from "./bank/bank.routes";
 import chatRoutes from "./chat/chat.routes";
 import uploadRoutes from "./uploads/upload.routes";
 import supplierRoutes from "./suppliers/supplier.routes";
+import marketRoutes from "./market/market.routes";
 
 const router = Router();
 
@@ -31,6 +32,7 @@ router.use("/admin", adminRoutes);
 router.use("/admin/customers", adminCustomerRoutes);
 router.use("/admin/commissions", adminCommissionRoutes);
 router.use("/admin/audit-logs", adminAuditRoutes);
+router.use("/admin/market", marketRoutes);
 router.use("/compliance", complianceRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/fx", fxRoutes);

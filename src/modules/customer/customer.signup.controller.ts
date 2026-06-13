@@ -17,7 +17,9 @@ export async function uploadCustomerDocument(req: Request, res: Response) {
 
 /**
  * Customer self-registration endpoint
- * Creates a User (role=CUSTOMER) and associated Customer profile in one transaction
+ * Creates a User (role=CUSTOMER) and associated Customer profile in one transaction.
+ * Supports referral code attribution — if a valid agent referral code is provided,
+ * the customer is linked to the referring agent.
  */
 export async function customerSignup(req: Request, res: Response, next: NextFunction) {
     try {
@@ -38,6 +40,8 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
             // Document URLs (uploaded separately via file upload endpoints)
             governmentIdUrl,
             proofOfAddressUrl,
+            // Referral
+            referralCode,
         } = req.body;
 
         if (!email || !password || !phone || !firstName || !lastName) {
@@ -64,6 +68,33 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
         const existingUser = await prisma.user.findFirst({ where: { email } });
         if (existingUser) {
             return res.status(409).json({ error: "An account with this email already exists" });
+        }
+
+        // ── Referral Code Validation ─────────────────────────────────────
+        let referringAgentId: string | null = null;
+        let validatedReferralCode: string | null = null;
+        let referralType: string | null = null;
+
+        if (referralCode) {
+            const trimmedCode = referralCode.trim().toUpperCase();
+
+            // Look up agent by referral code
+            const agentProfile = await prisma.agentProfile.findFirst({
+                where: { referralCode: trimmedCode },
+                include: { user: { select: { id: true, isActive: true } } },
+            });
+
+            if (agentProfile && agentProfile.user.isActive) {
+                referringAgentId = agentProfile.userId;
+                validatedReferralCode = trimmedCode;
+                referralType = "AGENT";
+            } else if (agentProfile && !agentProfile.user.isActive) {
+                // Agent exists but is suspended — still allow signup but don't attribute
+                console.warn(`Referral code ${trimmedCode} belongs to an inactive agent`);
+            } else {
+                // Invalid referral code — don't block signup, just ignore
+                console.warn(`Invalid referral code provided: ${trimmedCode}`);
+            }
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
@@ -98,6 +129,10 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
                     governmentIdUrl: governmentIdUrl || null,
                     proofOfAddressUrl: proofOfAddressUrl || null,
                     verified: false,
+                    // Referral attribution
+                    referringAgentId,
+                    referralCode: validatedReferralCode,
+                    referralType,
                 },
             });
 
@@ -123,6 +158,7 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
                 id: result.customer.id,
                 fullName: result.customer.fullName,
                 verified: result.customer.verified,
+                referralApplied: !!referringAgentId,
             },
             token,
         });

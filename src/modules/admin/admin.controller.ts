@@ -35,6 +35,9 @@ export async function createAgent(req: Request, res: Response) {
         const onboardingToken = generateOnboardingToken();
         const onboardingTokenExpiry = getOnboardingTokenExpiry();
 
+        // Generate referral code from license ID (e.g., PE-AGT-001 → PEAGT001)
+        const referralCode = `PE-${licenseId.replace(/[^A-Z0-9]/gi, '').toUpperCase()}`;
+
         // Create user and agent profile in a single transaction using nested create
         const user = await prisma.user.create({
             data: {
@@ -52,7 +55,8 @@ export async function createAgent(req: Request, res: Response) {
                         dailyLimit: 50000,
                         monthlyLimit: 500000,
                         onboardingToken,
-                        onboardingTokenExpiry
+                        onboardingTokenExpiry,
+                        referralCode,
                     }
                 }
             },
@@ -217,10 +221,30 @@ export async function getFxMargin(req: Request, res: Response) {
 export async function setFxMargin(req: Request, res: Response) {
     const { countryId, margin } = req.body;
 
+    // Log the previous margin value before updating
+    const previousMargin = await prisma.fxMargin.findUnique({ where: { countryId } });
+
     await prisma.fxMargin.upsert({
         where: { countryId },
         update: { margin },
         create: { countryId, margin }
+    });
+
+    // Audit log for margin change
+    await prisma.auditLog.create({
+        data: {
+            actorId: (req as any).user.id,
+            role: "ADMIN",
+            action: "FX_MARGIN_CHANGED",
+            entity: "FxMargin",
+            entityId: countryId,
+            ip: req.ip || "127.0.0.1",
+            metadata: {
+                countryId,
+                previousMargin: previousMargin?.margin?.toString() || "0",
+                newMargin: margin.toString(),
+            },
+        },
     });
 
     res.json({ updated: true });
@@ -934,9 +958,34 @@ export async function upsertFxRate(req: Request, res: Response) {
             isActive: true,
         };
 
+        // Log rate change (only if updating existing)
         if (existing >= 0) {
+            const prev = rates[existing];
+            await prisma.rateChangeLog.create({
+                data: {
+                    pair,
+                    previousBuy: prev.buy,
+                    previousSell: prev.sell,
+                    newBuy: Number(buy),
+                    newSell: Number(sell),
+                    changedBy: (req as any).user.id,
+                    reason: req.body.reason || "Manual update",
+                },
+            });
             rates[existing] = updated;
         } else {
+            // New rate - log as creation
+            await prisma.rateChangeLog.create({
+                data: {
+                    pair,
+                    previousBuy: 0,
+                    previousSell: 0,
+                    newBuy: Number(buy),
+                    newSell: Number(sell),
+                    changedBy: (req as any).user.id,
+                    reason: req.body.reason || "Rate created",
+                },
+            });
             rates.push(updated);
         }
 
@@ -957,6 +1006,20 @@ export async function updateFxRate(req: Request, res: Response) {
         const rates = await loadRates();
         const idx = rates.findIndex(r => r.pair === pair);
         if (idx < 0) return res.status(404).json({ error: "Rate not found" });
+
+        // Log rate change before applying
+        const prev = rates[idx];
+        await prisma.rateChangeLog.create({
+            data: {
+                pair,
+                previousBuy: prev.buy,
+                previousSell: prev.sell,
+                newBuy: buy != null ? Number(buy) : prev.buy,
+                newSell: sell != null ? Number(sell) : prev.sell,
+                changedBy: (req as any).user.id,
+                reason: req.body.reason || "Manual update",
+            },
+        });
 
         if (buy != null) rates[idx].buy = Number(buy);
         if (sell != null) rates[idx].sell = Number(sell);

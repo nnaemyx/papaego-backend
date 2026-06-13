@@ -114,6 +114,7 @@ model AgentProfile {
   onboardingStatus      String    @default("PENDING") // PENDING, IN_PROGRESS, SUBMITTED, APPROVED
   onboardingToken       String?   @unique
   onboardingTokenExpiry DateTime?
+  referralCode          String?   @unique
 
   user User @relation(fields: [userId], references: [id])
 }
@@ -140,6 +141,11 @@ model Customer {
   verified          Boolean   @default(false)
   createdAt         DateTime  @default(now())
 
+  // Referral attribution (no FK — agent may be deleted later)
+  referringAgentId String?
+  referralCode     String?
+  referralType     String? // AGENT | CORPORATE | DIRECT
+
   user               User                    @relation(fields: [userId], references: [id])
   notes              CustomerNote[]
   documents          CustomerDocument[]
@@ -148,6 +154,8 @@ model Customer {
   tradeRequests      TradeRequest[]
   suppliers          Supplier[]
   adminSupplierLinks AdminSupplierCustomer[]
+
+  @@index([referringAgentId])
 }
 
 model CustomerBankDetails {
@@ -243,6 +251,11 @@ model Trade {
   fxRate          Decimal?
   lockedUntil     DateTime?
 
+  // Negotiation (one-time 0.05% discount per trade)
+  originalFxRate  Decimal?
+  negotiatedRate  Decimal?
+  negotiationUsed Boolean   @default(false)
+
   status    TradeStatus
   createdAt DateTime    @default(now())
 
@@ -317,7 +330,21 @@ model AuditLog {
   entity    String
   entityId  String
   ip        String
+  metadata  Json?
   createdAt DateTime @default(now())
+}
+
+model NegotiationLog {
+  id           String   @id @default(uuid())
+  tradeId      String
+  userId       String
+  originalRate Decimal
+  newRate      Decimal
+  discount     Decimal
+  createdAt    DateTime @default(now())
+
+  @@index([tradeId])
+  @@index([userId])
 }
 
 model FxMargin {
@@ -329,6 +356,35 @@ model FxMargin {
 model SystemConfig {
   key   String @id
   value Json
+}
+
+// ---------- RATE CHANGE AUDIT ----------
+
+model RateChangeLog {
+  id            String   @id @default(uuid())
+  pair          String
+  previousBuy   Decimal
+  previousSell  Decimal
+  newBuy        Decimal
+  newSell       Decimal
+  changedBy     String
+  reason        String?
+  createdAt     DateTime @default(now())
+
+  @@index([pair])
+  @@index([changedBy])
+}
+
+// ---------- DAILY TURNOVER ----------
+
+model DailyTurnover {
+  id          String   @id @default(uuid())
+  date        DateTime @db.Date
+  totalVolume Decimal  @default(0)
+  targetMet   Boolean  @default(false)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([date])
 }
 
 // ---------- COMMISSIONS ----------
@@ -424,4 +480,68 @@ model AdminSupplierCustomer {
   customer Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@unique([supplierId, customerId])
+}
+
+// ---------- MARKET DATA COLLECTION ----------
+
+model MarketRate {
+  id               String   @id @default(uuid())
+  timestamp        DateTime
+  source           String
+  venue            String
+  assetPair        String
+  bid              Decimal
+  ask              Decimal
+  mid              Decimal
+  spread           Decimal
+  availableVolume  Decimal?
+  minOrder         Decimal?
+  maxOrder         Decimal?
+  liquidityScore   Decimal?
+  reliabilityScore Decimal?
+  dataStatus       String   @default("valid")
+  createdAt        DateTime @default(now())
+
+  @@index([assetPair, source])
+  @@index([timestamp])
+}
+
+model P2PQuote {
+  id               String   @id @default(uuid())
+  timestamp        DateTime
+  source           String
+  venue            String
+  assetPair        String
+  bid              Decimal
+  ask              Decimal
+  mid              Decimal
+  spread           Decimal
+  availableVolume  Decimal?
+  minOrder         Decimal?
+  maxOrder         Decimal?
+  completionRate   Decimal?
+  paymentMethod    String?
+  merchantLimits   Json?
+  liquidityScore   Decimal?
+  reliabilityScore Decimal?
+  dataStatus       String   @default("valid")
+  createdAt        DateTime @default(now())
+
+  @@index([assetPair, source])
+  @@index([timestamp])
+}
+
+model LiquidityDepth {
+  id               String   @id @default(uuid())
+  timestamp        DateTime
+  venue            String
+  assetPair        String
+  executableVolume Decimal
+  bidDepth         Json?
+  askDepth         Json?
+  venueRanking     Int?
+  createdAt        DateTime @default(now())
+
+  @@index([venue, assetPair])
+  @@index([timestamp])
 }

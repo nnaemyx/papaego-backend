@@ -55,6 +55,10 @@ import {
     setTradeRequestRate,
 } from "./admin.tradeRequest.controller";
 import { uploadTradeReceipt } from "./admin.receipt.controller";
+import {
+    getAdminTurnoverStats,
+    updateTurnoverConfig,
+} from "../trades/negotiation.controller";
 
 const router = Router();
 
@@ -122,5 +126,9 @@ router.get("/reports/kya", getKYAReport);
 router.get("/reports/oversight", getOversightReport);
 router.get("/reports/corridors", getCorridorReport);
 router.get("/reports/export", exportReport);
+
+// ── Turnover & Negotiation Config ─────────────────────────────────────────────
+router.get("/turnover/today", getAdminTurnoverStats);
+router.post("/turnover/config", updateTurnoverConfig);
 
 export default router;

@@ -7,6 +7,19 @@ import { createTradeRequest, getCustomerTradeRequests, getTradeRequestById } fro
 import { upsertBankDetails, getBankDetails } from "./customer.bank.controller";
 import { uploadToCloudinary } from "../../middlewares/upload.middleware";
 import { sendReceiptUploadedEmail } from "../../services/email.service";
+import {
+    assertRateNotExpired,
+    isRateExpired,
+    rateExpiresInSeconds,
+    RateExpiredError,
+} from "../../utils/checkRateExpiry";
+import { expireTradeIfNeeded } from "../../jobs/tradeExpiration.job";
+import {
+    checkNegotiationEligibility,
+    applyNegotiation,
+    isTurnoverTargetMet,
+    isNegotiationFeatureEnabled,
+} from "../trades/negotiation.service";
 
 const router = Router();
 
@@ -130,6 +143,8 @@ router.get("/trades", async (req: Request, res: Response) => {
             recipientName: t.recipientName,
             payoutAmount: t.payoutAmount,
             lockedUntil: t.lockedUntil,
+            rateExpiresIn: rateExpiresInSeconds(t.lockedUntil),
+            isRateExpired: isRateExpired(t),
             createdAt: t.createdAt.toISOString(),
         }));
 
@@ -149,10 +164,12 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
         const customer = await prisma.customer.findUnique({ where: { userId } });
         if (!customer) return res.status(404).json({ error: "Customer not found" });
 
-        const trade = await prisma.trade.findFirst({
+        let trade = await prisma.trade.findFirst({
             where: { id: req.params.id, customerId: customer.id },
         });
         if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        trade = await expireTradeIfNeeded(trade);
 
         // Build timeline from audit logs
         const auditLogs = await prisma.auditLog.findMany({
@@ -176,6 +193,11 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
             payoutAmount: trade.payoutAmount,
             paymentProofUrl: trade.paymentProofUrl,
             lockedUntil: trade.lockedUntil,
+            rateExpiresIn: rateExpiresInSeconds(trade.lockedUntil),
+            isRateExpired: isRateExpired(trade),
+            negotiationUsed: trade.negotiationUsed,
+            originalFxRate: trade.originalFxRate?.toString() ?? null,
+            negotiatedRate: trade.negotiatedRate?.toString() ?? null,
             paymentAccountName: trade.paymentAccountName,
             paymentAccountNumber: trade.paymentAccountNumber,
             paymentBankName: trade.paymentBankName,
@@ -306,6 +328,23 @@ router.patch("/trades/:id/confirm", async (req: Request, res: Response) => {
 
         if (!trade) return res.status(404).json({ error: "Trade not found" });
 
+        if (!["QUOTED", "SENT_TO_CUSTOMER"].includes(trade.status)) {
+            return res.status(400).json({
+                error: "Trade cannot be confirmed in its current status",
+                code: "INVALID_STATUS",
+            });
+        }
+
+        try {
+            assertRateNotExpired(trade);
+        } catch (error) {
+            if (error instanceof RateExpiredError) {
+                await expireTradeIfNeeded(trade);
+                return res.status(error.statusCode).json({ error: error.message, code: error.code });
+            }
+            throw error;
+        }
+
         await prisma.trade.update({
             where: { id: trade.id },
             data: { status: "CUSTOMER_CONFIRMED" }
@@ -324,6 +363,7 @@ router.patch("/trades/:id/confirm", async (req: Request, res: Response) => {
 
         res.json({ success: true, status: "CUSTOMER_CONFIRMED" });
     } catch (error) {
+        console.error("Error confirming trade:", error);
         res.status(500).json({ error: "Failed to confirm trade" });
     }
 });
@@ -357,6 +397,85 @@ router.patch("/trades/:id/proof", uploadToCloudinary.single("proof"), async (req
     } catch (error) {
         console.error("Error uploading proof:", error);
         res.status(500).json({ error: "Failed to upload proof" });
+    }
+});
+
+/**
+ * GET /customer/portal/trades/:id/negotiation-eligibility
+ * Check if a specific trade can be negotiated.
+ */
+router.get("/trades/:id/negotiation-eligibility", async (req: Request, res: Response) => {
+    try {
+        const customer = (req as any).user.customer;
+        const trade = await prisma.trade.findFirst({
+            where: { id: req.params.id, customerId: customer.id },
+        });
+
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        const eligibility = await checkNegotiationEligibility(trade.id);
+        res.json(eligibility);
+    } catch (error) {
+        console.error("Error checking negotiation eligibility:", error);
+        res.status(500).json({ error: "Failed to check eligibility" });
+    }
+});
+
+/**
+ * POST /customer/portal/trades/:id/negotiate
+ * Apply one-time 0.05% negotiation discount to a trade.
+ */
+router.post("/trades/:id/negotiate", async (req: Request, res: Response) => {
+    try {
+        const customer = (req as any).user.customer;
+        const userId = (req as any).user.id;
+        const ip = req.ip || "127.0.0.1";
+
+        const trade = await prisma.trade.findFirst({
+            where: { id: req.params.id, customerId: customer.id },
+        });
+
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        // Check eligibility first
+        const eligibility = await checkNegotiationEligibility(trade.id);
+        if (!eligibility.eligible) {
+            return res.status(403).json({
+                error: eligibility.reason,
+                eligible: false,
+            });
+        }
+
+        const result = await applyNegotiation(trade.id, userId, ip);
+        res.json(result);
+    } catch (error: any) {
+        console.error("Error applying negotiation:", error);
+
+        if (error.message === "Negotiation has already been used for this trade") {
+            return res.status(409).json({ error: error.message });
+        }
+
+        res.status(500).json({ error: "Failed to apply negotiation" });
+    }
+});
+
+/**
+ * GET /customer/portal/negotiation-status
+ * Global negotiation availability status for the customer.
+ */
+router.get("/negotiation-status", async (req: Request, res: Response) => {
+    try {
+        const [featureEnabled, turnoverMet] = await Promise.all([
+            isNegotiationFeatureEnabled(),
+            isTurnoverTargetMet(),
+        ]);
+
+        res.json({
+            negotiationAvailable: featureEnabled && turnoverMet,
+        });
+    } catch (error) {
+        console.error("Error fetching negotiation status:", error);
+        res.status(500).json({ error: "Failed to fetch status" });
     }
 });
 

@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { assertTransition } from "../../utils/stateMachine";
+import { assertRateNotExpired, computeLockedUntil, rateExpiresInSeconds, RateExpiredError } from "../../utils/checkRateExpiry";
 import { getLockedRate } from "../fx/fx.service";
 import { randomUUID } from "node:crypto";
 import { sendSupplierConfirmedEmail, sendTradeCompletionEmail, sendTradeCancelledEmail } from "../../services/email.service";
@@ -132,6 +133,10 @@ export async function quoteTrade(req: Request, res: Response) {
 
     if (!trade) throw new Error("Trade not found");
 
+    if (trade.status === "EXPIRED") {
+        return res.status(410).json({ error: "Trade rate has expired. Re-verify the customer before quoting again.", code: "RATE_EXPIRED" });
+    }
+
     assertTransition(trade.status, "QUOTED");
 
     const fxRate = await getLockedRate(
@@ -140,11 +145,13 @@ export async function quoteTrade(req: Request, res: Response) {
         trade.countryId || ""
     );
 
+    const lockedUntil = computeLockedUntil();
+
     await prisma.trade.update({
         where: { id: trade.id },
         data: {
             fxRate,
-            lockedUntil: new Date(Date.now() + 10 * 60 * 1000),
+            lockedUntil,
             status: "QUOTED"
         }
     });
@@ -191,7 +198,11 @@ export async function quoteTrade(req: Request, res: Response) {
         }
     });
 
-    res.json({ fxRate });
+    res.json({
+        fxRate,
+        lockedUntil: lockedUntil.toISOString(),
+        rateExpiresIn: rateExpiresInSeconds(lockedUntil),
+    });
 }
 
 export async function sendToCustomer(req: Request, res: Response) {
@@ -201,6 +212,15 @@ export async function sendToCustomer(req: Request, res: Response) {
     });
 
     if (!trade) throw new Error("Trade not found");
+
+    try {
+        assertRateNotExpired(trade);
+    } catch (error) {
+        if (error instanceof RateExpiredError) {
+            return res.status(error.statusCode).json({ error: error.message, code: error.code });
+        }
+        throw error;
+    }
 
     assertTransition(trade.status, "SENT_TO_CUSTOMER");
 

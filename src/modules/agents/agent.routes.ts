@@ -36,6 +36,7 @@ import {
     claimTradeRequest,
     setTradeRequestRate
 } from "./agent.request.controller";
+import { getAgentReferralLink, getAgentReferrals } from "./referral.controller";
 
 const router = Router();
 
@@ -55,6 +56,8 @@ router.post("/profile/avatar", uploadToCloudinary.single("avatar"), uploadProfil
 
 // Referral
 router.get("/referral", getAgentReferral);
+router.get("/referral-link", getAgentReferralLink);
+router.get("/referrals", getAgentReferrals);
 
 // FX Rates (read admin-configured rates)
 router.get("/fx-rates", getFxRatesForAgent);
