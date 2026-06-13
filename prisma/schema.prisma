@@ -126,6 +126,7 @@ model AgentProfile {
   onboardingToken       String?   @unique
   onboardingTokenExpiry DateTime?
   referralCode          String?   @unique
+  agentType             String    @default("FIELD") // FIELD, CORPORATE
 
   user User @relation(fields: [userId], references: [id])
 }

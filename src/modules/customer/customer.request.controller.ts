@@ -119,19 +119,35 @@ export async function createTradeRequest(req: Request, res: Response) {
 export async function getCustomerTradeRequests(req: Request, res: Response) {
     try {
         const customerId = (req as any).user.customer?.id;
-        const { page = 1, limit = 20 } = req.query;
+        const { page = 1, limit = 20, search } = req.query;
 
         const skip = (Number(page) - 1) * Number(limit);
         const take = Number(limit);
 
+        const where: any = { customerId };
+        if (search) {
+            const cleanSearch = (search as string).trim().toLowerCase();
+            const rawIdSearch = cleanSearch.replace("pe-", "");
+            where.AND = [
+                {
+                    OR: [
+                        { id: { contains: rawIdSearch } },
+                        { supplierBusinessName: { contains: cleanSearch, mode: "insensitive" } },
+                        { sendCurrency: { contains: cleanSearch, mode: "insensitive" } },
+                        { receiveCurrency: { contains: cleanSearch, mode: "insensitive" } },
+                    ]
+                }
+            ];
+        }
+
         const [requests, total] = await Promise.all([
             prisma.tradeRequest.findMany({
-                where: { customerId },
+                where,
                 orderBy: { createdAt: "desc" },
                 skip,
                 take,
             }),
-            prisma.tradeRequest.count({ where: { customerId } })
+            prisma.tradeRequest.count({ where })
         ]);
 
         // Fetch linked trades to find their IDs

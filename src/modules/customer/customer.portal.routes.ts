@@ -139,9 +139,24 @@ router.patch("/kyc/resubmit", uploadToCloudinary.fields([
 router.get("/trades", async (req: Request, res: Response) => {
     try {
         const customer = (req as any).user.customer;
-        const { status, page = 1, limit = 20 } = req.query;
+        const { status, page = 1, limit = 20, search } = req.query;
         const where: any = { customerId: customer.id };
         if (status && status !== "ALL") where.status = status;
+
+        if (search) {
+            const cleanSearch = (search as string).trim().toLowerCase();
+            const rawIdSearch = cleanSearch.replace("pe-", "");
+            where.AND = [
+                {
+                    OR: [
+                        { id: { contains: rawIdSearch } },
+                        { recipientName: { contains: cleanSearch, mode: "insensitive" } },
+                        { sendCurrency: { contains: cleanSearch, mode: "insensitive" } },
+                        { receiveCurrency: { contains: cleanSearch, mode: "insensitive" } },
+                    ]
+                }
+            ];
+        }
 
         const [trades, total] = await Promise.all([
             prisma.trade.findMany({

@@ -9,7 +9,7 @@ import {
 } from "../../services/email.service";
 
 export async function createAgent(req: Request, res: Response) {
-    const { email: rawEmail, phone, region, firstName, lastName } = req.body;
+    const { email: rawEmail, phone, region, firstName, lastName, agentType } = req.body;
     const email = rawEmail?.trim().toLowerCase();
 
     // Validate required fields
@@ -57,6 +57,7 @@ export async function createAgent(req: Request, res: Response) {
                         onboardingToken,
                         onboardingTokenExpiry,
                         referralCode,
+                        agentType: agentType || "FIELD",
                     }
                 }
             },
@@ -132,6 +133,7 @@ export async function getAgents(req: Request, res: Response) {
         email: user.email,
         role: user.role,
         region: user.agentProfile?.region || "N/A",
+        agentType: user.agentProfile?.agentType || "FIELD",
         activeTrades: 0, // Calculate from trades table
         status: user.isActive ? "Active" : "Inactive",
         phone: user.phone,
@@ -259,6 +261,39 @@ export async function listAllTrades(req: Request, res: Response) {
         const where: any = {};
         if (status && status !== 'All') where.status = (status as string).toUpperCase();
 
+        if (search) {
+            const cleanSearch = (search as string).trim().toLowerCase();
+            const rawIdSearch = cleanSearch.replace("#pe-", "").replace("pe-", "");
+            where.OR = [
+                { id: { contains: rawIdSearch } },
+                {
+                    customer: {
+                        fullName: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    customer: {
+                        email: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    agent: {
+                        firstName: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    agent: {
+                        lastName: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    agent: {
+                        email: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                }
+            ];
+        }
+
         const [trades, total] = await Promise.all([
             prisma.trade.findMany({
                 where,
@@ -296,8 +331,7 @@ export async function listAllTrades(req: Request, res: Response) {
             customerMap[c.id] = c.fullName || c.email || 'Customer';
         });
 
-        // Filter by search on formatted data if needed
-        let formatted = trades.map(trade => {
+        const formatted = trades.map(trade => {
             const agentName = agentMap[trade.agentId] || 'N/A';
             const customerName = customerMap[trade.customerId] || 'N/A';
             const dateObj = new Date(trade.createdAt);
@@ -326,15 +360,6 @@ export async function listAllTrades(req: Request, res: Response) {
                 createdAt: trade.createdAt
             };
         });
-
-        if (search) {
-            const s = (search as string).toLowerCase();
-            formatted = formatted.filter(t =>
-                t.tradeId.toLowerCase().includes(s) ||
-                t.agent.toLowerCase().includes(s) ||
-                t.customer.toLowerCase().includes(s)
-            );
-        }
 
         res.json({ trades: formatted, total, page: parseInt(page as string, 10), limit: take });
     } catch (error) {
@@ -546,6 +571,7 @@ export async function getAgent(req: Request, res: Response) {
             status: user.isActive ? 'Active' : 'Inactive',
             region: user.agentProfile?.region || 'N/A',
             licenseId: user.agentProfile?.licenseId || 'N/A',
+            agentType: user.agentProfile?.agentType || 'FIELD',
             onboardingStatus: user.agentProfile?.onboardingStatus || 'PENDING',
             agentProfile: user.agentProfile,
             statistics: {
@@ -666,7 +692,7 @@ export async function deleteAgent(req: Request, res: Response) {
 export async function updateAgent(req: Request, res: Response) {
     try {
         const { id } = req.params;
-        const { firstName, lastName, phone, region, isActive } = req.body;
+        const { firstName, lastName, phone, region, agentType, isActive } = req.body;
 
         const updateData: any = {};
         if (firstName !== undefined) updateData.firstName = firstName;
@@ -680,11 +706,15 @@ export async function updateAgent(req: Request, res: Response) {
             include: { agentProfile: true }
         });
 
-        // Update agent profile if region is provided
-        if (region && user.agentProfile) {
+        // Update agent profile if region or agentType is provided
+        if ((region || agentType) && user.agentProfile) {
+            const profileUpdate: any = {};
+            if (region) profileUpdate.region = region;
+            if (agentType) profileUpdate.agentType = agentType;
+            
             await prisma.agentProfile.update({
                 where: { userId: id },
-                data: { region }
+                data: profileUpdate
             });
         }
 
