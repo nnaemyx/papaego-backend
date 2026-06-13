@@ -33,5 +33,6 @@ export const supplierUpdateSchema = z.object({
     routingCode: z.string().optional().or(z.literal("")),
     currency: z.string().min(3).max(3).optional(),
     address: z.string().optional().or(z.literal("")),
+    isArchived: z.boolean().optional(),
   })
 });

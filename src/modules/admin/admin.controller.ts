@@ -561,6 +561,15 @@ export async function getAgent(req: Request, res: Response) {
             }
         });
 
+        // Get ratings stats
+        const ratings = await prisma.agentRating.findMany({
+            where: { agentId: id }
+        });
+        const totalRatings = ratings.length;
+        const averageRating = totalRatings > 0
+            ? Number((ratings.reduce((sum, r) => sum + r.rating, 0) / totalRatings).toFixed(2))
+            : null;
+
         res.json({
             ...user,
             agentId: `#PE-${user.id.slice(0, 5).toUpperCase()}`,
@@ -578,7 +587,9 @@ export async function getAgent(req: Request, res: Response) {
                 totalTrades,
                 activeTrades,
                 completedTrades,
-                flaggedTransactions: flags.length
+                flaggedTransactions: flags.length,
+                averageRating,
+                totalRatings,
             }
         });
     } catch (error) {

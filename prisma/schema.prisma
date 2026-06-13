@@ -88,6 +88,7 @@ model User {
   agentDocuments     CustomerDocument[] @relation("AgentDocuments")
   agentTrades        Trade[]            @relation("AgentTrades")
   agentTradeRequests TradeRequest[]     @relation("AgentTradeRequests")
+  agentRatings       AgentRating[]      @relation("AgentRatings")
 }
 
 model Notification {
@@ -170,6 +171,8 @@ model Customer {
   tradeRequests      TradeRequest[]
   suppliers          Supplier[]
   adminSupplierLinks AdminSupplierCustomer[]
+  agentRatings       AgentRating[]
+  feedbacks          CustomerFeedback[]
 
   @@index([referringAgentId])
 }
@@ -306,6 +309,7 @@ model Trade {
   agent        User          @relation("AgentTrades", fields: [agentId], references: [id])
   commissions  Commission[]
   chatMessages ChatMessage[]
+  agentRating  AgentRating?
 }
 
 // ---------- COMPLIANCE ----------
@@ -465,6 +469,7 @@ model Supplier {
   routingCode     String?
   currency        String?
   address         String?
+  isArchived      Boolean  @default(false)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -560,4 +565,30 @@ model LiquidityDepth {
 
   @@index([venue, assetPair])
   @@index([timestamp])
+}
+
+// ---------- SPRINT 5 CUSTOMER FEEDBACK & RATINGS ----------
+
+model AgentRating {
+  id         String   @id @default(uuid())
+  tradeId    String   @unique
+  agentId    String
+  customerId String
+  rating     Int
+  feedback   String?
+  createdAt  DateTime @default(now())
+
+  trade    Trade    @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+  agent    User     @relation("AgentRatings", fields: [agentId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+}
+
+model CustomerFeedback {
+  id         String   @id @default(uuid())
+  customerId String
+  category   String   @default("GENERAL") // GENERAL, SUGGESTION, COMPLAINT
+  message    String
+  createdAt  DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 }

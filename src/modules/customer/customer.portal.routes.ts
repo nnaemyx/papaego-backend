@@ -3,8 +3,9 @@ import { auth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/rbac.middleware";
 import prisma from "../../config/db";
 import { customerSignup, uploadCustomerDocument } from "./customer.signup.controller";
-import { createTradeRequest, getCustomerTradeRequests, getTradeRequestById } from "./customer.request.controller";
+import { createTradeRequest, getCustomerTradeRequests, getTradeRequestById, updateCustomerTradeRequest, cancelCustomerTradeRequest } from "./customer.request.controller";
 import { upsertBankDetails, getBankDetails } from "./customer.bank.controller";
+import { createNotification } from "../notifications/notification.service";
 import { getKycStatus, resubmitKyc } from "./customer.kyc.controller";
 import { uploadToCloudinary } from "../../middlewares/upload.middleware";
 import { sendReceiptUploadedEmail } from "../../services/email.service";
@@ -111,6 +112,8 @@ router.get("/dashboard/stats", async (req: Request, res: Response) => {
 router.post("/trade-requests", createTradeRequest);
 router.get("/trade-requests", getCustomerTradeRequests);
 router.get("/trade-requests/:id", getTradeRequestById);
+router.put("/trade-requests/:id", updateCustomerTradeRequest);
+router.patch("/trade-requests/:id/cancel", cancelCustomerTradeRequest);
 
 // --- Bank Details ---
 router.post("/bank-details", upsertBankDetails);
@@ -203,6 +206,17 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
 
         let trade = await prisma.trade.findFirst({
             where: { id: req.params.id, customerId: customer.id },
+            include: {
+                agent: {
+                    select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true,
+                    }
+                },
+                agentRating: true,
+            }
         });
         if (!trade) return res.status(404).json({ error: "Trade not found" });
 
@@ -273,6 +287,8 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
             receiveCurrency: trade.receiveCurrency,
             fxRate: trade.fxRate?.toString() || null,
             status: trade.status,
+            agent: (trade as any).agent,
+            agentRating: (trade as any).agentRating,
             paymentMethod: trade.paymentMethod,
             paymentSource: trade.paymentSource,
             payoutMethod: trade.payoutMethod,
@@ -565,6 +581,133 @@ router.get("/negotiation-status", async (req: Request, res: Response) => {
     } catch (error) {
         console.error("Error fetching negotiation status:", error);
         res.status(500).json({ error: "Failed to fetch status" });
+    }
+});
+
+/**
+ * PATCH /customer/portal/trades/:id/cancel
+ */
+router.patch("/trades/:id/cancel", async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).user.id;
+        const customer = (req as any).user.customer;
+
+        const trade = await prisma.trade.findFirst({
+            where: { id: req.params.id, customerId: customer.id }
+        });
+
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        if (["COMPLETED", "CANCELLED", "EXPIRED"].includes(trade.status)) {
+            return res.status(400).json({ error: `Cannot cancel trade in ${trade.status} status` });
+        }
+
+        const updated = await prisma.trade.update({
+            where: { id: trade.id },
+            data: { status: "CANCELLED" }
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: userId,
+                role: "CUSTOMER",
+                action: "TRADE_CANCELLED_BY_CUSTOMER",
+                entity: "Trade",
+                entityId: trade.id,
+                ip: req.ip || "127.0.0.1"
+            }
+        });
+
+        // Notify assigned agent
+        await createNotification(
+            trade.agentId,
+            "Trade Cancelled by Customer",
+            `Customer has cancelled trade #${trade.id.slice(0, 8).toUpperCase()}.`,
+            "WARNING"
+        );
+
+        res.json({ success: true, status: "CANCELLED" });
+    } catch (error) {
+        console.error("Error cancelling trade:", error);
+        res.status(500).json({ error: "Failed to cancel trade" });
+    }
+});
+
+/**
+ * POST /customer/portal/trades/:id/rate
+ * Rate the agent for a completed trade
+ */
+router.post("/trades/:id/rate", async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).user.id;
+        const { rating, feedback } = req.body;
+
+        if (!rating || rating < 1 || rating > 5) {
+            return res.status(400).json({ error: "Rating must be an integer between 1 and 5" });
+        }
+
+        const customer = (req as any).user.customer;
+
+        const trade = await prisma.trade.findFirst({
+            where: { id: req.params.id, customerId: customer.id }
+        });
+
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        if (trade.status !== "COMPLETED") {
+            return res.status(400).json({ error: "Only completed trades can be rated" });
+        }
+
+        // Check duplicate
+        const existingRating = await prisma.agentRating.findUnique({
+            where: { tradeId: trade.id }
+        });
+        if (existingRating) {
+            return res.status(400).json({ error: "This transaction has already been rated" });
+        }
+
+        const agentRating = await prisma.agentRating.create({
+            data: {
+                tradeId: trade.id,
+                agentId: trade.agentId,
+                customerId: customer.id,
+                rating: Number(rating),
+                feedback: feedback || null
+            }
+        });
+
+        res.status(201).json(agentRating);
+    } catch (error) {
+        console.error("Error rating agent:", error);
+        res.status(500).json({ error: "Failed to submit agent rating" });
+    }
+});
+
+/**
+ * POST /customer/portal/feedback
+ * General customer feedback capture
+ */
+router.post("/feedback", async (req: Request, res: Response) => {
+    try {
+        const customer = (req as any).user.customer;
+        const { category, message } = req.body;
+
+        if (!message) {
+            return res.status(400).json({ error: "Feedback message is required" });
+        }
+
+        const feedback = await prisma.customerFeedback.create({
+            data: {
+                customerId: customer.id,
+                category: category || "GENERAL",
+                message
+            }
+        });
+
+        res.status(201).json(feedback);
+    } catch (error) {
+        console.error("Error creating feedback:", error);
+        res.status(500).json({ error: "Failed to submit feedback" });
     }
 });
 
