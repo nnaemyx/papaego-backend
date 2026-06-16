@@ -39,6 +39,8 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
             // Document URLs (uploaded separately via file upload endpoints)
             governmentIdUrl,
             proofOfAddressUrl,
+            // Referral (Sprint 2)
+            referralCode,
         } = req.body;
 
         if (!email || !password || !phone || !firstName || !lastName) {
@@ -76,6 +78,21 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
+        // Resolve referring agent from referralCode (format: REF-<licenseId>)
+        let referringAgentId: string | null = null;
+        if (referralCode && typeof referralCode === "string") {
+            const normalised = referralCode.trim().toUpperCase();
+            // Strip the REF- prefix if present
+            const licenseId = normalised.startsWith("REF-") ? normalised.slice(4) : normalised;
+            if (licenseId) {
+                const agentProfile = await prisma.agentProfile.findFirst({
+                    where: { licenseId },
+                    select: { userId: true },
+                });
+                referringAgentId = agentProfile?.userId ?? null;
+            }
+        }
+
         // Create user and customer profile in a transaction
         const result = await prisma.$transaction(async (tx) => {
             const user = await tx.user.create({
@@ -107,8 +124,26 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
                     proofOfAddressUrl: proofOfAddressUrl || null,
                     verified: false,
                     kycStatus: (governmentIdUrl && proofOfAddressUrl) ? "SUBMITTED" : "NOT_SUBMITTED",
+                    referringAgentId: referringAgentId,
+                    referralCode: referralCode?.trim() || null,
                 },
             });
+
+            // Stub a referral commission for the agent (paid once customer completes first trade)
+            if (referringAgentId) {
+                // We log the referral in AuditLog; actual commission is created on first COMPLETED trade
+                await tx.auditLog.create({
+                    data: {
+                        actorId: "SYSTEM",
+                        role: "ADMIN",
+                        action: "REFERRAL_CUSTOMER_REGISTERED",
+                        entity: "Customer",
+                        entityId: customer.id,
+                        ip: "system",
+                        metadata: { referringAgentId, referralCode },
+                    },
+                });
+            }
 
             return { user, customer };
         });

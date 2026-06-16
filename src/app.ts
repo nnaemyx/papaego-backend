@@ -5,6 +5,7 @@ import path from "path";
 import routes from "./modules";
 
 import { errorHandler } from "./middlewares/error.middleware";
+import { startRateExpiryJob } from "./jobs/fx.expiry";
 
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
@@ -59,5 +60,8 @@ app.use(express.json({
 app.use("/api", routes);
 
 app.use(errorHandler);
+
+// Start background jobs
+startRateExpiryJob();
 
 export default app;

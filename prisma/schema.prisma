@@ -125,6 +125,7 @@ model AgentProfile {
   onboardingStatus      String    @default("PENDING") // PENDING, IN_PROGRESS, SUBMITTED, APPROVED
   onboardingToken       String?   @unique
   onboardingTokenExpiry DateTime?
+  agentType             String    @default("Field Agent")
 
   user User @relation(fields: [userId], references: [id])
 }
@@ -154,6 +155,10 @@ model Customer {
   kycReviewedAt     DateTime?
   kycReviewedBy     String?
   createdAt         DateTime  @default(now())
+
+  // Referral tracking (Sprint 2)
+  referringAgentId  String?
+  referralCode      String?
 
   user               User                    @relation(fields: [userId], references: [id])
   notes              CustomerNote[]
@@ -279,6 +284,11 @@ model Trade {
   // Escrow / Admin Hold
   isCommissionFrozen Boolean @default(false)
 
+  // Negotiation fields (Sprint 2)
+  negotiationUsed  Boolean  @default(false)
+  originalFxRate   Decimal?
+  negotiatedRate   Decimal?
+
   // Admin-managed fields
   tradeRequestId        String?
   receiptUrl            String?
@@ -332,7 +342,19 @@ model AuditLog {
   entity    String
   entityId  String
   ip        String
+  metadata  Json?    // before/after for rate changes, negotiation details, etc.
   createdAt DateTime @default(now())
+}
+
+// Immutable negotiation audit trail (Sprint 2)
+model NegotiationLog {
+  id           String   @id @default(uuid())
+  tradeId      String
+  userId       String
+  originalRate Decimal
+  newRate      Decimal
+  discount     Decimal
+  createdAt    DateTime @default(now())
 }
 
 model FxMargin {

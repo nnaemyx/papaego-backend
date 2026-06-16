@@ -9,7 +9,7 @@ import {
 } from "../../services/email.service";
 
 export async function createAgent(req: Request, res: Response) {
-    const { email: rawEmail, phone, region, firstName, lastName } = req.body;
+    const { email: rawEmail, phone, region, firstName, lastName, role, agentType } = req.body;
     const email = rawEmail?.trim().toLowerCase();
 
     // Validate required fields
@@ -35,6 +35,9 @@ export async function createAgent(req: Request, res: Response) {
         const onboardingToken = generateOnboardingToken();
         const onboardingTokenExpiry = getOnboardingTokenExpiry();
 
+        const incomingType = (agentType || role || "").toUpperCase();
+        const finalAgentType = incomingType.includes("CORPORATE") ? "CORPORATE" : "FIELD";
+
         // Create user and agent profile in a single transaction using nested create
         const user = await prisma.user.create({
             data: {
@@ -52,7 +55,8 @@ export async function createAgent(req: Request, res: Response) {
                         dailyLimit: 50000,
                         monthlyLimit: 500000,
                         onboardingToken,
-                        onboardingTokenExpiry
+                        onboardingTokenExpiry,
+                        agentType: finalAgentType
                     }
                 }
             },
@@ -93,12 +97,22 @@ export async function createAgent(req: Request, res: Response) {
 }
 
 export async function getAgents(req: Request, res: Response) {
-    const { status, role, region, search } = req.query;
+    const { status, role, region, search, agentType } = req.query;
 
     const where: any = {};
 
     if (status) where.status = status;
-    if (role) where.role = role;
+    
+    if (role || region || agentType) {
+        where.agentProfile = {};
+        if (role) {
+            where.agentProfile.agentType = role === "Corporate Agent" || role === "CORPORATE" ? "CORPORATE" : "FIELD";
+        }
+        if (agentType) {
+            where.agentProfile.agentType = agentType as string;
+        }
+        if (region) where.agentProfile.region = region as string;
+    }
 
     // Add search functionality
     if (search) {
@@ -126,7 +140,8 @@ export async function getAgents(req: Request, res: Response) {
             ? `${user.firstName} ${user.lastName}`
             : user.email || 'Unknown',
         email: user.email,
-        role: user.role,
+        role: user.agentProfile?.agentType === "CORPORATE" ? "Corporate Agent" : "Field Agent",
+        agentType: user.agentProfile?.agentType || "FIELD",
         region: user.agentProfile?.region || "N/A",
         activeTrades: 0, // Calculate from trades table
         status: user.isActive ? "Active" : "Inactive",
@@ -521,6 +536,8 @@ export async function getAgent(req: Request, res: Response) {
             phone: user.phone || null,
             status: user.isActive ? 'Active' : 'Inactive',
             region: user.agentProfile?.region || 'N/A',
+            role: user.agentProfile?.agentType === 'CORPORATE' ? 'Corporate Agent' : 'Field Agent',
+            agentType: user.agentProfile?.agentType || 'FIELD',
             licenseId: user.agentProfile?.licenseId || 'N/A',
             onboardingStatus: user.agentProfile?.onboardingStatus || 'PENDING',
             agentProfile: user.agentProfile,
@@ -642,7 +659,7 @@ export async function deleteAgent(req: Request, res: Response) {
 export async function updateAgent(req: Request, res: Response) {
     try {
         const { id } = req.params;
-        const { firstName, lastName, phone, region, isActive } = req.body;
+        const { firstName, lastName, phone, region, isActive, role, agentType } = req.body;
 
         const updateData: any = {};
         if (firstName !== undefined) updateData.firstName = firstName;
@@ -656,15 +673,36 @@ export async function updateAgent(req: Request, res: Response) {
             include: { agentProfile: true }
         });
 
-        // Update agent profile if region is provided
-        if (region && user.agentProfile) {
+        // Update agent profile if region or role (agentType) is provided
+        const profileUpdateData: any = {};
+        if (region !== undefined) profileUpdateData.region = region;
+        
+        const incomingType = (agentType || role || "").toUpperCase();
+        if (incomingType) {
+            profileUpdateData.agentType = incomingType.includes("CORPORATE") ? "CORPORATE" : "FIELD";
+        }
+
+        if (Object.keys(profileUpdateData).length > 0 && user.agentProfile) {
             await prisma.agentProfile.update({
                 where: { userId: id },
-                data: { region }
+                data: profileUpdateData
             });
         }
 
-        res.json(user);
+        const updatedUser = await prisma.user.findUnique({
+            where: { id },
+            include: { agentProfile: true }
+        });
+
+        if (!updatedUser) {
+            return res.status(404).json({ error: "Agent not found" });
+        }
+
+        res.json({
+            ...updatedUser,
+            role: updatedUser.agentProfile?.agentType === "CORPORATE" ? "Corporate Agent" : "Field Agent",
+            agentType: updatedUser.agentProfile?.agentType || "FIELD"
+        });
     } catch (error) {
         console.error("Error updating agent:", error);
         res.status(500).json({ error: "Failed to update agent" });
@@ -924,6 +962,8 @@ export async function upsertFxRate(req: Request, res: Response) {
 
         const rates = await loadRates();
         const existing = rates.findIndex(r => r.pair === pair);
+        const before = existing >= 0 ? { ...rates[existing] } : null;
+
         const updated: StoredFxRate = {
             pair,
             baseCurrency,
@@ -941,6 +981,23 @@ export async function upsertFxRate(req: Request, res: Response) {
         }
 
         await saveRates(rates);
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: 'ADMIN',
+                action: 'FX_RATE_UPDATED',
+                entity: 'SystemConfig',
+                entityId: FX_RATES_KEY,
+                ip: req.ip || '127.0.0.1',
+                metadata: {
+                    pair,
+                    before,
+                    after: updated
+                } as any
+            }
+        });
+
         res.json(updated);
     } catch (error) {
         console.error("Error upserting FX rate:", error);
@@ -958,6 +1015,8 @@ export async function updateFxRate(req: Request, res: Response) {
         const idx = rates.findIndex(r => r.pair === pair);
         if (idx < 0) return res.status(404).json({ error: "Rate not found" });
 
+        const before = { ...rates[idx] };
+
         if (buy != null) rates[idx].buy = Number(buy);
         if (sell != null) rates[idx].sell = Number(sell);
         if (baseCurrency) rates[idx].baseCurrency = baseCurrency;
@@ -965,6 +1024,23 @@ export async function updateFxRate(req: Request, res: Response) {
         rates[idx].lastUpdated = new Date().toISOString();
 
         await saveRates(rates);
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: 'ADMIN',
+                action: 'FX_RATE_UPDATED',
+                entity: 'SystemConfig',
+                entityId: FX_RATES_KEY,
+                ip: req.ip || '127.0.0.1',
+                metadata: {
+                    pair,
+                    before,
+                    after: rates[idx]
+                } as any
+            }
+        });
+
         res.json(rates[idx]);
     } catch (error) {
         console.error("Error updating FX rate:", error);
@@ -978,12 +1054,29 @@ export async function deleteFxRate(req: Request, res: Response) {
         const pair = decodeURIComponent(req.params.pair);
 
         const rates = await loadRates();
+        const deletedRate = rates.find(r => r.pair === pair);
         const filtered = rates.filter(r => r.pair !== pair);
         if (filtered.length === rates.length) {
             return res.status(404).json({ error: "Rate not found" });
         }
 
         await saveRates(filtered);
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: 'ADMIN',
+                action: 'FX_RATE_DELETED',
+                entity: 'SystemConfig',
+                entityId: FX_RATES_KEY,
+                ip: req.ip || '127.0.0.1',
+                metadata: {
+                    pair,
+                    deleted: deletedRate || null
+                } as any
+            }
+        });
+
         res.json({ success: true });
     } catch (error) {
         console.error("Error deleting FX rate:", error);

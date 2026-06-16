@@ -265,6 +265,7 @@ export async function processTradeRequest(req: Request, res: Response) {
                 paymentBankName: paymentBankName || null,
                 paymentAmount: paymentAmount ? Number(paymentAmount) : null,
                 status: paymentAccountNumber ? "AWAITING_PAYMENT" : "INITIATED",
+                lockedUntil: (request as any).fxRate ? new Date(Date.now() + 10 * 60 * 1000) : null,
             } as any,
         });
 
@@ -470,6 +471,7 @@ export async function setTradeRequestRate(req: Request, res: Response) {
                 fxRate: Number(fxRate),
                 payoutAmount: Number(payoutAmount),
                 status: "QUOTED", // Optional: Update status or leave as PENDING
+                quotedAt: new Date(),
             },
         });
 

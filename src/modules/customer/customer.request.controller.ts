@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { sendTradeInitiatedEmail } from "../../services/email.service";
 import { createNotification } from "../notifications/notification.service";
+import { checkAndRefreshTradeRequestExpiry } from "./customer.portal.routes";
 
 /**
  * Customer initiates a trade request
@@ -166,11 +167,17 @@ export async function getTradeRequestById(req: Request, res: Response) {
         const customerId = (req as any).user.customer?.id;
         const { id } = req.params;
 
-        const request = await prisma.tradeRequest.findFirst({
+        let request = await prisma.tradeRequest.findFirst({
             where: { id, customerId },
         });
 
         if (!request) {
+            return res.status(404).json({ error: "Trade request not found" });
+        }
+
+        // Check expiry & auto-refresh
+        const activeRequest = await checkAndRefreshTradeRequestExpiry(request);
+        if (!activeRequest) {
             return res.status(404).json({ error: "Trade request not found" });
         }
 
@@ -179,9 +186,16 @@ export async function getTradeRequestById(req: Request, res: Response) {
             select: { id: true },
         });
 
+        let rateExpiresIn: number | null = null;
+        if (activeRequest.status === "QUOTED" && (activeRequest as any).quotedAt) {
+            const msLeft = new Date((activeRequest as any).quotedAt).getTime() + 10 * 60 * 1000 - Date.now();
+            rateExpiresIn = msLeft > 0 ? Math.floor(msLeft / 1000) : 0;
+        }
+
         res.json({
-            ...request,
+            ...activeRequest,
             linkedTradeId: linkedTrade?.id || null,
+            rateExpiresIn,
         });
     } catch (error) {
         console.error("Error fetching trade request by ID:", error);

@@ -60,6 +60,14 @@ import {
     approveKyc,
     rejectKyc,
 } from "../customer/customer.kyc.controller";
+import {
+    adminApproveNegotiation,
+    adminRejectNegotiation,
+    getNegotiationSettings,
+    updateNegotiationSettings,
+    getTurnoverStats,
+    updateTurnoverConfig,
+} from "../negotiation/negotiation.controller";
 
 const router = Router();
 
@@ -132,5 +140,13 @@ router.get("/reports/kya", getKYAReport);
 router.get("/reports/oversight", getOversightReport);
 router.get("/reports/corridors", getCorridorReport);
 router.get("/reports/export", exportReport);
+
+// ── Negotiation ────────────────────────────────────────────────────────────────
+router.post("/transactions/:id/negotiate/approve", adminApproveNegotiation);
+router.post("/transactions/:id/negotiate/reject", adminRejectNegotiation);
+router.get("/negotiation/config", getNegotiationSettings);
+router.patch("/negotiation/config", updateNegotiationSettings);
+router.get("/turnover/today", getTurnoverStats);
+router.post("/turnover/config", updateTurnoverConfig);
 
 export default router;

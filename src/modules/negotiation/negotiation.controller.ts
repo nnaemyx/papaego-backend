@@ -1,0 +1,543 @@
+import { Request, Response } from "express";
+import prisma from "../../config/db";
+import { Decimal } from "@prisma/client/runtime/library";
+import { checkAndRefreshTradeExpiry } from "../customer/customer.portal.routes";
+
+/** Default negotiation config keys stored in SystemConfig */
+const CONFIG_KEY = "negotiation_config";
+
+async function getNegotiationConfig() {
+    const row = await prisma.systemConfig.findUnique({ where: { key: CONFIG_KEY } });
+    const defaults = {
+        turnoverThreshold: 10_000, // Default to $10,000 USD
+        maxDiscountPct: 0.05,       // 5%
+        enabled: true,
+    };
+    if (!row || typeof row.value !== "object" || Array.isArray(row.value)) return defaults;
+    const val = row.value as any;
+    
+    // Backwards compatibility for DB keys (threshold and discountBps vs turnoverThreshold and maxDiscountPct)
+    const turnoverThreshold = val.turnoverThreshold !== undefined 
+        ? val.turnoverThreshold 
+        : (val.threshold !== undefined ? val.threshold : defaults.turnoverThreshold);
+        
+    const maxDiscountPct = val.maxDiscountPct !== undefined 
+        ? val.maxDiscountPct 
+        : (val.discountBps !== undefined ? val.discountBps / 100 : defaults.maxDiscountPct);
+        
+    const enabled = val.enabled !== undefined ? Boolean(val.enabled) : defaults.enabled;
+
+    return {
+        turnoverThreshold: Number(turnoverThreshold),
+        maxDiscountPct: Number(maxDiscountPct),
+        enabled
+    };
+}
+
+async function getUsdToNgnRate(): Promise<number> {
+    try {
+        const row = await prisma.systemConfig.findUnique({ where: { key: "fx_rates" } });
+        if (row && Array.isArray(row.value)) {
+            const usdNgnPair = (row.value as any[]).find(r => r.pair === "USD/NGN" || r.pair === "USD_NGN");
+            if (usdNgnPair) {
+                return Number(usdNgnPair.sell || usdNgnPair.buy || 1500);
+            }
+        }
+        const { RealFxProvider } = require("../fx/fx.provider");
+        const fxProvider = new RealFxProvider();
+        const rate = await fxProvider.getRate("USD", "NGN", "NGA");
+        return rate || 1500;
+    } catch (e) {
+        console.error("Failed to get USD/NGN rate:", e);
+        return 1500;
+    }
+}
+
+function getTradeUsdAmount(trade: { amount: any, sendCurrency: string, receiveCurrency: string, fxRate: any }, usdToNgnRate: number): number {
+    const amount = Number(trade.amount);
+    const fxRate = Number(trade.fxRate || 1);
+    const sendUpper = trade.sendCurrency.toUpperCase();
+    const receiveUpper = trade.receiveCurrency.toUpperCase();
+
+    if (sendUpper === "USD") {
+        return amount;
+    }
+    if (receiveUpper === "USD") {
+        return fxRate > 0 ? amount / fxRate : amount;
+    }
+    if (sendUpper === "NGN") {
+        return usdToNgnRate > 0 ? amount / usdToNgnRate : amount / 1500;
+    }
+    if (receiveUpper === "NGN") {
+        const amountInNgn = amount * fxRate;
+        return usdToNgnRate > 0 ? amountInNgn / usdToNgnRate : amountInNgn / 1500;
+    }
+    return amount;
+}
+
+/**
+ * GET /customer/portal/trades/:id/negotiate/eligibility
+ * Returns whether the customer is eligible to negotiate on this trade.
+ */
+export async function checkNegotiationEligibility(req: Request, res: Response) {
+    try {
+        const customer = (req as any).user.customer;
+        const { id: tradeId } = req.params;
+
+        let trade = await prisma.trade.findFirst({
+            where: { id: tradeId, customerId: customer.id },
+        });
+        if (!trade) {
+            trade = await prisma.trade.findFirst({
+                where: { tradeRequestId: tradeId, customerId: customer.id },
+            });
+        }
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        const activeTrade = await checkAndRefreshTradeExpiry(trade);
+        if (!activeTrade) {
+            return res.status(404).json({ error: "Trade not found" });
+        }
+
+        if (!["QUOTED", "SENT_TO_CUSTOMER"].includes(activeTrade.status)) {
+            return res.json({ eligible: false, reason: "Trade is not in a quotable state" });
+        }
+
+        if (activeTrade.negotiationUsed) {
+            return res.json({ eligible: false, reason: "Negotiation already used for this trade" });
+        }
+
+        const config = await getNegotiationConfig();
+
+        if (!config.enabled) {
+            return res.json({ eligible: false, reason: "Rate negotiation is currently disabled" });
+        }
+
+        // Sum last 30 days of completed trades for this customer
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const recentTrades = await prisma.trade.findMany({
+            where: {
+                customerId: customer.id,
+                status: "COMPLETED",
+                createdAt: { gte: thirtyDaysAgo },
+            },
+            select: {
+                amount: true,
+                sendCurrency: true,
+                receiveCurrency: true,
+                fxRate: true,
+            }
+        });
+
+        const usdToNgnRate = await getUsdToNgnRate();
+        let turnover = 0;
+        for (const t of recentTrades) {
+            turnover += getTradeUsdAmount(t, usdToNgnRate);
+        }
+
+        const eligible = turnover >= config.turnoverThreshold;
+
+        return res.json({
+            eligible,
+            turnover,
+            turnoverThreshold: config.turnoverThreshold,
+            maxDiscountPct: config.maxDiscountPct,
+            reason: eligible
+                ? undefined
+                : `Minimum 30-day turnover of $${config.turnoverThreshold.toLocaleString()} required (current: $${turnover.toLocaleString(undefined, { maximumFractionDigits: 2 })})`,
+        });
+    } catch (err) {
+        console.error("[Negotiation] eligibility error:", err);
+        res.status(500).json({ error: "Failed to check eligibility" });
+    }
+}
+
+/**
+ * POST /customer/portal/trades/:id/negotiate
+ * Customer submits a counter-rate request.
+ * Body: { requestedRate: number }
+ */
+export async function requestNegotiation(req: Request, res: Response) {
+    try {
+        const customer = (req as any).user.customer;
+        const { id: tradeId } = req.params;
+        const { requestedRate } = req.body;
+
+        if (!requestedRate || isNaN(Number(requestedRate))) {
+            return res.status(400).json({ error: "requestedRate is required and must be a number" });
+        }
+
+        let trade = await prisma.trade.findFirst({
+            where: { id: tradeId, customerId: customer.id },
+        });
+        if (!trade) {
+            trade = await prisma.trade.findFirst({
+                where: { tradeRequestId: tradeId, customerId: customer.id },
+            });
+        }
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        const activeTrade = await checkAndRefreshTradeExpiry(trade);
+        if (!activeTrade) {
+            return res.status(404).json({ error: "Trade not found" });
+        }
+
+        if (!["QUOTED", "SENT_TO_CUSTOMER"].includes(activeTrade.status)) {
+            return res.status(409).json({ error: "Trade is not in a negotiable state" });
+        }
+        if (activeTrade.negotiationUsed) {
+            return res.status(409).json({ error: "Negotiation already used for this trade" });
+        }
+        if (!activeTrade.fxRate) {
+            return res.status(409).json({ error: "Trade has no rate to negotiate against" });
+        }
+
+        const config = await getNegotiationConfig();
+        if (!config.enabled) {
+            return res.status(403).json({ error: "Rate negotiation is currently disabled" });
+        }
+
+        const originalRate = Number(activeTrade.fxRate);
+        const requested = Number(requestedRate);
+        const minAllowed = originalRate * (1 - config.maxDiscountPct);
+
+        if (requested < minAllowed) {
+            return res.status(400).json({
+                error: `Requested rate is below the maximum allowed discount. Minimum allowable rate: ${minAllowed.toFixed(4)}`,
+            });
+        }
+
+        // Verify turnover
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const recentTrades = await prisma.trade.findMany({
+            where: {
+                customerId: customer.id,
+                status: "COMPLETED",
+                createdAt: { gte: thirtyDaysAgo },
+            },
+            select: {
+                amount: true,
+                sendCurrency: true,
+                receiveCurrency: true,
+                fxRate: true,
+            }
+        });
+        const usdToNgnRate = await getUsdToNgnRate();
+        let turnover = 0;
+        for (const t of recentTrades) {
+            turnover += getTradeUsdAmount(t, usdToNgnRate);
+        }
+        if (turnover < config.turnoverThreshold) {
+            return res.status(403).json({ error: `Turnover threshold not met for negotiation. Required: $${config.turnoverThreshold.toLocaleString()}, Current: $${turnover.toLocaleString(undefined, { maximumFractionDigits: 2 })}` });
+        }
+
+        const discount = ((originalRate - requested) / originalRate) * 100;
+
+        // Store negotiation request in SystemConfig keyed by tradeId (lightweight – no new table needed at request stage)
+        // Persist negotiation request as a pending NegotiationLog (newRate = 0 means pending)
+        await prisma.negotiationLog.create({
+            data: {
+                tradeId: activeTrade.id,
+                userId: (req as any).user.id,
+                originalRate: new Decimal(originalRate),
+                newRate: new Decimal(requested),
+                discount: new Decimal(discount),
+            },
+        });
+
+        // Mark trade as negotiation pending (store requested rate in originalFxRate temporarily)
+        await prisma.trade.update({
+            where: { id: activeTrade.id },
+            data: {
+                originalFxRate: new Decimal(originalRate),
+                negotiatedRate: new Decimal(requested),
+            },
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: "CUSTOMER",
+                action: "NEGOTIATION_REQUESTED",
+                entity: "Trade",
+                entityId: activeTrade.id,
+                ip: req.ip || "127.0.0.1",
+                metadata: {
+                    originalRate,
+                    requestedRate: requested,
+                    discountPct: discount.toFixed(2),
+                },
+            },
+        });
+
+        res.json({
+            success: true,
+            message: "Negotiation request submitted. Awaiting admin review.",
+            originalRate,
+            requestedRate: requested,
+            discountPct: discount.toFixed(2),
+        });
+    } catch (err) {
+        console.error("[Negotiation] request error:", err);
+        res.status(500).json({ error: "Failed to submit negotiation request" });
+    }
+}
+
+/**
+ * POST /admin/transactions/:id/negotiate/approve
+ * Admin approves the negotiated rate.
+ */
+export async function adminApproveNegotiation(req: Request, res: Response) {
+    try {
+        const { id: tradeId } = req.params;
+
+        const trade = await prisma.trade.findUnique({ where: { id: tradeId } });
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        if (!trade.negotiatedRate || !trade.originalFxRate) {
+            return res.status(409).json({ error: "No pending negotiation on this trade" });
+        }
+        if (trade.negotiationUsed) {
+            return res.status(409).json({ error: "Negotiation already settled" });
+        }
+
+        await prisma.trade.update({
+            where: { id: tradeId },
+            data: {
+                fxRate: trade.negotiatedRate,
+                negotiationUsed: true,
+            },
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: "ADMIN",
+                action: "NEGOTIATION_APPROVED",
+                entity: "Trade",
+                entityId: tradeId,
+                ip: req.ip || "127.0.0.1",
+                metadata: {
+                    originalRate: trade.originalFxRate?.toString(),
+                    approvedRate: trade.negotiatedRate?.toString(),
+                },
+            },
+        });
+
+        res.json({ success: true, newFxRate: trade.negotiatedRate?.toString() });
+    } catch (err) {
+        console.error("[Negotiation] admin approve error:", err);
+        res.status(500).json({ error: "Failed to approve negotiation" });
+    }
+}
+
+/**
+ * POST /admin/transactions/:id/negotiate/reject
+ * Admin rejects the negotiation request (rate stays unchanged).
+ */
+export async function adminRejectNegotiation(req: Request, res: Response) {
+    try {
+        const { id: tradeId } = req.params;
+
+        const trade = await prisma.trade.findUnique({ where: { id: tradeId } });
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        if (!trade.negotiatedRate) {
+            return res.status(409).json({ error: "No pending negotiation on this trade" });
+        }
+
+        // Clear pending negotiation fields but keep original rate untouched
+        await prisma.trade.update({
+            where: { id: tradeId },
+            data: {
+                negotiatedRate: null,
+                negotiationUsed: true, // Consumed — customer cannot re-negotiate
+            },
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: "ADMIN",
+                action: "NEGOTIATION_REJECTED",
+                entity: "Trade",
+                entityId: tradeId,
+                ip: req.ip || "127.0.0.1",
+                metadata: { requestedRate: trade.negotiatedRate?.toString() },
+            },
+        });
+
+        res.json({ success: true, message: "Negotiation rejected. Original rate retained." });
+    } catch (err) {
+        console.error("[Negotiation] admin reject error:", err);
+        res.status(500).json({ error: "Failed to reject negotiation" });
+    }
+}
+
+/**
+ * GET /admin/negotiation/config
+ * Returns current negotiation configuration.
+ */
+export async function getNegotiationSettings(req: Request, res: Response) {
+    try {
+        const config = await getNegotiationConfig();
+        res.json(config);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to fetch negotiation config" });
+    }
+}
+
+/**
+ * PATCH /admin/negotiation/config
+ * Admin updates negotiation config.
+ * Body: { turnoverThreshold?, maxDiscountPct?, enabled? }
+ */
+export async function updateNegotiationSettings(req: Request, res: Response) {
+    try {
+        const { turnoverThreshold, maxDiscountPct, enabled } = req.body;
+
+        const existing = await getNegotiationConfig();
+        const updated = {
+            ...existing,
+            ...(turnoverThreshold !== undefined && { turnoverThreshold: Number(turnoverThreshold) }),
+            ...(maxDiscountPct !== undefined && { maxDiscountPct: Number(maxDiscountPct) }),
+            ...(enabled !== undefined && { enabled: Boolean(enabled) }),
+        };
+
+        await prisma.systemConfig.upsert({
+            where: { key: CONFIG_KEY },
+            update: { value: updated },
+            create: { key: CONFIG_KEY, value: updated },
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: "ADMIN",
+                action: "NEGOTIATION_CONFIG_UPDATED",
+                entity: "SystemConfig",
+                entityId: CONFIG_KEY,
+                ip: req.ip || "127.0.0.1",
+                metadata: updated,
+            },
+        });
+
+        res.json({ success: true, config: updated });
+    } catch (err) {
+        console.error("[Negotiation] config update error:", err);
+        res.status(500).json({ error: "Failed to update negotiation config" });
+    }
+}
+
+/**
+ * GET /admin/turnover/today
+ * Returns current day's turnover statistics compared to target.
+ */
+export async function getTurnoverStats(req: Request, res: Response) {
+    try {
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+
+        const todayTrades = await prisma.trade.findMany({
+            where: {
+                status: "COMPLETED",
+                createdAt: { gte: startOfToday },
+            },
+            select: {
+                amount: true,
+                sendCurrency: true,
+                receiveCurrency: true,
+                fxRate: true,
+            }
+        });
+
+        const usdToNgnRate = await getUsdToNgnRate();
+        let currentTurnover = 0;
+        for (const t of todayTrades) {
+            currentTurnover += getTradeUsdAmount(t, usdToNgnRate);
+        }
+
+        // Fetch turnover config
+        const targetRow = await prisma.systemConfig.findUnique({
+            where: { key: "daily_turnover_target" }
+        });
+        
+        let targetTurnover = 3_000_000; // Default target: $3M
+        let enabled = true;
+
+        if (targetRow && typeof targetRow.value === "object" && !Array.isArray(targetRow.value)) {
+            const val = targetRow.value as any;
+            targetTurnover = val.target !== undefined ? Number(val.target) : 3_000_000;
+            enabled = val.enabled !== undefined ? Boolean(val.enabled) : true;
+        }
+
+        const turnoverProgress = targetTurnover > 0 
+            ? Math.min(100, Math.round((currentTurnover / targetTurnover) * 100))
+            : 100;
+        
+        const turnoverMet = currentTurnover >= targetTurnover;
+
+        res.json({
+            currentTurnover,
+            targetTurnover,
+            turnoverMet,
+            featureEnabled: enabled,
+            turnoverProgress
+        });
+    } catch (err) {
+        console.error("[Negotiation] error getting turnover stats:", err);
+        res.status(500).json({ error: "Failed to fetch turnover stats" });
+    }
+}
+
+/**
+ * POST /admin/turnover/config
+ * Admin updates daily turnover config.
+ * Body: { target?, enabled? }
+ */
+export async function updateTurnoverConfig(req: Request, res: Response) {
+    try {
+        const { target, enabled } = req.body;
+
+        // Fetch existing target config
+        const targetRow = await prisma.systemConfig.findUnique({
+            where: { key: "daily_turnover_target" }
+        });
+        
+        let existing = { target: 3_000_000, enabled: true };
+        if (targetRow && typeof targetRow.value === "object" && !Array.isArray(targetRow.value)) {
+            existing = { ...existing, ...(targetRow.value as object) };
+        }
+
+        const updated = {
+            target: target !== undefined ? Number(target) : existing.target,
+            enabled: enabled !== undefined ? Boolean(enabled) : existing.enabled
+        };
+
+        await prisma.systemConfig.upsert({
+            where: { key: "daily_turnover_target" },
+            update: { value: updated },
+            create: { key: "daily_turnover_target", value: updated },
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: (req as any).user.id,
+                role: "ADMIN",
+                action: "TURNOVER_CONFIG_UPDATED",
+                entity: "SystemConfig",
+                entityId: "daily_turnover_target",
+                ip: req.ip || "127.0.0.1",
+                metadata: updated,
+            },
+        });
+
+        res.json({ success: true, target: updated.target, enabled: updated.enabled });
+    } catch (err) {
+        console.error("[Negotiation] error updating turnover config:", err);
+        res.status(500).json({ error: "Failed to update turnover target" });
+    }
+}
