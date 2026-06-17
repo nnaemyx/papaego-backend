@@ -6,6 +6,20 @@ const prisma = new PrismaClient();
 async function main() {
     console.log("🌱 Seeding database...");
 
+    await prisma.systemConfig.upsert({
+        where: { key: "negotiation_config" },
+        update: {},
+        create: {
+            key: "negotiation_config",
+            value: {
+                threshold: 10_000_000,
+                enabled: true,
+                discountBps: 5,
+            },
+        },
+    });
+    console.log("✅ Negotiation config seeded (negotiation_config)");
+
     // Create admin user
     const adminEmail = process.env.ADMIN_EMAIL || "admin@papaego.com";
     const adminPassword = process.env.ADMIN_PASSWORD || "Admin@123";

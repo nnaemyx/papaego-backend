@@ -36,7 +36,9 @@ export async function createAgent(req: Request, res: Response) {
         const onboardingTokenExpiry = getOnboardingTokenExpiry();
 
         const incomingType = (agentType || role || "").toUpperCase();
-        const finalAgentType = incomingType.includes("CORPORATE") ? "CORPORATE" : "FIELD";
+        const finalAgentType = incomingType.includes("CORPORATE") ? "Corporate Agent" : "Field Agent";
+        // Generate referral code from license ID (e.g., PE-AGT-001 → PEAGT001)
+        const referralCode = `PE-${licenseId.replace(/[^A-Z0-9]/gi, '').toUpperCase()}`;
 
         // Create user and agent profile in a single transaction using nested create
         const user = await prisma.user.create({
@@ -56,6 +58,7 @@ export async function createAgent(req: Request, res: Response) {
                         monthlyLimit: 500000,
                         onboardingToken,
                         onboardingTokenExpiry,
+                        referralCode,
                         agentType: finalAgentType
                     }
                 }
@@ -232,10 +235,30 @@ export async function getFxMargin(req: Request, res: Response) {
 export async function setFxMargin(req: Request, res: Response) {
     const { countryId, margin } = req.body;
 
+    // Log the previous margin value before updating
+    const previousMargin = await prisma.fxMargin.findUnique({ where: { countryId } });
+
     await prisma.fxMargin.upsert({
         where: { countryId },
         update: { margin },
         create: { countryId, margin }
+    });
+
+    // Audit log for margin change
+    await prisma.auditLog.create({
+        data: {
+            actorId: (req as any).user.id,
+            role: "ADMIN",
+            action: "FX_MARGIN_CHANGED",
+            entity: "FxMargin",
+            entityId: countryId,
+            ip: req.ip || "127.0.0.1",
+            metadata: {
+                countryId,
+                previousMargin: previousMargin?.margin?.toString() || "0",
+                newMargin: margin.toString(),
+            },
+        },
     });
 
     res.json({ updated: true });
@@ -249,6 +272,39 @@ export async function listAllTrades(req: Request, res: Response) {
 
         const where: any = {};
         if (status && status !== 'All') where.status = (status as string).toUpperCase();
+
+        if (search) {
+            const cleanSearch = (search as string).trim().toLowerCase();
+            const rawIdSearch = cleanSearch.replace("#pe-", "").replace("pe-", "");
+            where.OR = [
+                { id: { contains: rawIdSearch } },
+                {
+                    customer: {
+                        fullName: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    customer: {
+                        email: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    agent: {
+                        firstName: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    agent: {
+                        lastName: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    agent: {
+                        email: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                }
+            ];
+        }
 
         const [trades, total] = await Promise.all([
             prisma.trade.findMany({
@@ -287,8 +343,7 @@ export async function listAllTrades(req: Request, res: Response) {
             customerMap[c.id] = c.fullName || c.email || 'Customer';
         });
 
-        // Filter by search on formatted data if needed
-        let formatted = trades.map(trade => {
+        const formatted = trades.map(trade => {
             const agentName = agentMap[trade.agentId] || 'N/A';
             const customerName = customerMap[trade.customerId] || 'N/A';
             const dateObj = new Date(trade.createdAt);
@@ -317,15 +372,6 @@ export async function listAllTrades(req: Request, res: Response) {
                 createdAt: trade.createdAt
             };
         });
-
-        if (search) {
-            const s = (search as string).toLowerCase();
-            formatted = formatted.filter(t =>
-                t.tradeId.toLowerCase().includes(s) ||
-                t.agent.toLowerCase().includes(s) ||
-                t.customer.toLowerCase().includes(s)
-            );
-        }
 
         res.json({ trades: formatted, total, page: parseInt(page as string, 10), limit: take });
     } catch (error) {
@@ -527,6 +573,15 @@ export async function getAgent(req: Request, res: Response) {
             }
         });
 
+        // Get ratings stats
+        const ratings = await prisma.agentRating.findMany({
+            where: { agentId: id }
+        });
+        const totalRatings = ratings.length;
+        const averageRating = totalRatings > 0
+            ? Number((ratings.reduce((sum: number, r: any) => sum + r.rating, 0) / totalRatings).toFixed(2))
+            : null;
+
         res.json({
             ...user,
             agentId: `#PE-${user.id.slice(0, 5).toUpperCase()}`,
@@ -545,7 +600,9 @@ export async function getAgent(req: Request, res: Response) {
                 totalTrades,
                 activeTrades,
                 completedTrades,
-                flaggedTransactions: flags.length
+                flaggedTransactions: flags.length,
+                averageRating,
+                totalRatings,
             }
         });
     } catch (error) {
@@ -655,11 +712,10 @@ export async function deleteAgent(req: Request, res: Response) {
     }
 }
 
-// Update agent details
 export async function updateAgent(req: Request, res: Response) {
     try {
         const { id } = req.params;
-        const { firstName, lastName, phone, region, isActive, role, agentType } = req.body;
+        const { firstName, lastName, phone, region, agentType, isActive, role } = req.body;
 
         const updateData: any = {};
         if (firstName !== undefined) updateData.firstName = firstName;
@@ -673,19 +729,19 @@ export async function updateAgent(req: Request, res: Response) {
             include: { agentProfile: true }
         });
 
-        // Update agent profile if region or role (agentType) is provided
-        const profileUpdateData: any = {};
-        if (region !== undefined) profileUpdateData.region = region;
-        
-        const incomingType = (agentType || role || "").toUpperCase();
-        if (incomingType) {
-            profileUpdateData.agentType = incomingType.includes("CORPORATE") ? "CORPORATE" : "FIELD";
-        }
-
-        if (Object.keys(profileUpdateData).length > 0 && user.agentProfile) {
+        // Update agent profile if region or agentType/role is provided
+        if ((region || agentType || role) && user.agentProfile) {
+            const profileUpdate: any = {};
+            if (region) profileUpdate.region = region;
+            
+            const incomingType = (agentType || role || "").toUpperCase();
+            if (incomingType) {
+                profileUpdate.agentType = incomingType.includes("CORPORATE") ? "Corporate Agent" : "Field Agent";
+            }
+            
             await prisma.agentProfile.update({
                 where: { userId: id },
-                data: profileUpdateData
+                data: profileUpdate
             });
         }
 
@@ -974,9 +1030,34 @@ export async function upsertFxRate(req: Request, res: Response) {
             isActive: true,
         };
 
+        // Log rate change (only if updating existing)
         if (existing >= 0) {
+            const prev = rates[existing];
+            await prisma.rateChangeLog.create({
+                data: {
+                    pair,
+                    previousBuy: prev.buy,
+                    previousSell: prev.sell,
+                    newBuy: Number(buy),
+                    newSell: Number(sell),
+                    changedBy: (req as any).user.id,
+                    reason: req.body.reason || "Manual update",
+                },
+            });
             rates[existing] = updated;
         } else {
+            // New rate - log as creation
+            await prisma.rateChangeLog.create({
+                data: {
+                    pair,
+                    previousBuy: 0,
+                    previousSell: 0,
+                    newBuy: Number(buy),
+                    newSell: Number(sell),
+                    changedBy: (req as any).user.id,
+                    reason: req.body.reason || "Rate created",
+                },
+            });
             rates.push(updated);
         }
 
@@ -1014,8 +1095,20 @@ export async function updateFxRate(req: Request, res: Response) {
         const rates = await loadRates();
         const idx = rates.findIndex(r => r.pair === pair);
         if (idx < 0) return res.status(404).json({ error: "Rate not found" });
-
         const before = { ...rates[idx] };
+        // Log rate change before applying
+        const prev = rates[idx];
+        await prisma.rateChangeLog.create({
+            data: {
+                pair,
+                previousBuy: prev.buy,
+                previousSell: prev.sell,
+                newBuy: buy != null ? Number(buy) : prev.buy,
+                newSell: sell != null ? Number(sell) : prev.sell,
+                changedBy: (req as any).user.id,
+                reason: req.body.reason || "Manual update",
+            },
+        });
 
         if (buy != null) rates[idx].buy = Number(buy);
         if (sell != null) rates[idx].sell = Number(sell);

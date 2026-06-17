@@ -2,6 +2,7 @@ import { TradeStatus } from "@prisma/client";
 import { assertTransition } from "../../utils/stateMachine";
 import prisma from "../../config/db";
 import { getLockedRate } from "../fx/fx.service";
+import { computeLockedUntil } from "../../utils/checkRateExpiry";
 import { 
   sendTradeCompletionEmail,
   sendSupplierConfirmedEmail,
@@ -10,6 +11,7 @@ import {
   sendTradeCancelledEmail
 } from "../../services/email.service";
 import { triggerTradeCommission } from "../commission/commission.service";
+import { updateDailyTurnover } from "./negotiation.service";
 
 // Kept for backward compatibility if needed, or replace entirely. 
 // User snippet replaces it with quoteTrade, but the controller uses updateTradeStatus in some places.
@@ -70,6 +72,9 @@ export async function updateTradeStatus(tradeId: string, newStatus: TradeStatus,
 
       // Trigger Commission for Agent
       await triggerTradeCommission(tradeId);
+
+      // Update daily turnover for negotiation eligibility tracking
+      await updateDailyTurnover(Number(trade.amount));
       
     } catch (emailError) {
       console.error("Failed to process trade COMPLETED hooks:", emailError);
@@ -159,7 +164,7 @@ export async function quoteTrade(tradeId: string, actor: any) {
     data: {
       fxRate,
       status: "QUOTED",
-      lockedUntil: new Date(Date.now() + 10 * 60 * 1000)
+      lockedUntil: computeLockedUntil()
     }
   });
 

@@ -130,3 +130,191 @@ export async function exportAuditLogs(req: Request, res: Response) {
         res.status(500).json({ error: "Failed to export audit logs" });
     }
 }
+
+// ─── Negotiation Logs (Immutable) ────────────────────────────────────────────
+
+/**
+ * GET /api/admin/audit-logs/negotiations
+ * Returns all negotiation action logs — immutable audit trail.
+ */
+export async function getNegotiationLogs(req: Request, res: Response) {
+    try {
+        const { tradeId, userId, page = '1', limit = '50' } = req.query;
+        const take = parseInt(limit as string, 10);
+        const skip = (parseInt(page as string, 10) - 1) * take;
+
+        const where: any = {};
+        if (tradeId) where.tradeId = tradeId;
+        if (userId) where.userId = userId;
+
+        const [logs, total] = await Promise.all([
+            prisma.negotiationLog.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                take,
+                skip,
+            }),
+            prisma.negotiationLog.count({ where }),
+        ]);
+
+        const formatted = logs.map(log => ({
+            id: log.id,
+            tradeId: log.tradeId,
+            userId: log.userId,
+            originalRate: Number(log.originalRate),
+            newRate: Number(log.newRate),
+            discount: Number(log.discount),
+            timestamp: log.createdAt.toISOString(),
+        }));
+
+        res.json({ logs: formatted, total, page: parseInt(page as string, 10), limit: take });
+    } catch (error) {
+        console.error("Error fetching negotiation logs:", error);
+        res.status(500).json({ error: "Failed to fetch negotiation logs" });
+    }
+}
+
+// ─── Rate Change Logs ────────────────────────────────────────────────────────
+
+/**
+ * GET /api/admin/audit-logs/rate-changes
+ * Returns all FX rate change logs with before/after values.
+ */
+export async function getRateChangeLogs(req: Request, res: Response) {
+    try {
+        const { pair, changedBy, page = '1', limit = '50' } = req.query;
+        const take = parseInt(limit as string, 10);
+        const skip = (parseInt(page as string, 10) - 1) * take;
+
+        const where: any = {};
+        if (pair) where.pair = pair;
+        if (changedBy) where.changedBy = changedBy;
+
+        const [logs, total] = await Promise.all([
+            prisma.rateChangeLog.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                take,
+                skip,
+            }),
+            prisma.rateChangeLog.count({ where }),
+        ]);
+
+        const formatted = logs.map(log => ({
+            id: log.id,
+            pair: log.pair,
+            previousBuy: Number(log.previousBuy),
+            previousSell: Number(log.previousSell),
+            newBuy: Number(log.newBuy),
+            newSell: Number(log.newSell),
+            changedBy: log.changedBy,
+            reason: log.reason,
+            timestamp: log.createdAt.toISOString(),
+        }));
+
+        res.json({ logs: formatted, total, page: parseInt(page as string, 10), limit: take });
+    } catch (error) {
+        console.error("Error fetching rate change logs:", error);
+        res.status(500).json({ error: "Failed to fetch rate change logs" });
+    }
+}
+
+// ─── Payment Approval Logs ───────────────────────────────────────────────────
+
+/**
+ * GET /api/admin/audit-logs/payments
+ * Returns payment-related audit log entries.
+ */
+export async function getPaymentLogs(req: Request, res: Response) {
+    try {
+        const { page = '1', limit = '50' } = req.query;
+        const take = parseInt(limit as string, 10);
+        const skip = (parseInt(page as string, 10) - 1) * take;
+
+        const paymentActions = [
+            'TRADE_AWAITING_PAYMENT',
+            'TRADE_PAYMENT_UPLOADED',
+            'TRADE_PAYMENT_CONFIRMED',
+            'PAYMENT_RECEIPT_UPLOADED',
+            'PAYOUT_CONFIRMED',
+        ];
+
+        const where = {
+            action: { in: paymentActions },
+        };
+
+        const [logs, total] = await Promise.all([
+            prisma.auditLog.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                take,
+                skip,
+            }),
+            prisma.auditLog.count({ where }),
+        ]);
+
+        const formatted = logs.map(log => ({
+            id: log.id,
+            logId: `#PAY-${log.id.slice(0, 5).toUpperCase()}`,
+            actor: log.actorId,
+            role: log.role,
+            action: log.action.replace(/_/g, ' '),
+            tradeId: log.entityId,
+            ipAddress: log.ip,
+            metadata: log.metadata,
+            timestamp: log.createdAt.toISOString(),
+        }));
+
+        res.json({ logs: formatted, total, page: parseInt(page as string, 10), limit: take });
+    } catch (error) {
+        console.error("Error fetching payment logs:", error);
+        res.status(500).json({ error: "Failed to fetch payment logs" });
+    }
+}
+
+// ─── Trade Audit Logs ────────────────────────────────────────────────────────
+
+/**
+ * GET /api/admin/audit-logs/trades
+ * Returns trade-related audit log entries (approvals, updates, status changes).
+ */
+export async function getTradeAuditLogs(req: Request, res: Response) {
+    try {
+        const { tradeId, page = '1', limit = '50' } = req.query;
+        const take = parseInt(limit as string, 10);
+        const skip = (parseInt(page as string, 10) - 1) * take;
+
+        const where: any = {
+            entity: 'Trade',
+        };
+
+        if (tradeId) where.entityId = tradeId;
+
+        const [logs, total] = await Promise.all([
+            prisma.auditLog.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                take,
+                skip,
+            }),
+            prisma.auditLog.count({ where }),
+        ]);
+
+        const formatted = logs.map(log => ({
+            id: log.id,
+            logId: `#TRD-${log.id.slice(0, 5).toUpperCase()}`,
+            actor: log.actorId,
+            role: log.role,
+            action: log.action.replace(/_/g, ' '),
+            tradeId: log.entityId,
+            ipAddress: log.ip,
+            metadata: log.metadata,
+            timestamp: log.createdAt.toISOString(),
+        }));
+
+        res.json({ logs: formatted, total, page: parseInt(page as string, 10), limit: take });
+    } catch (error) {
+        console.error("Error fetching trade audit logs:", error);
+        res.status(500).json({ error: "Failed to fetch trade audit logs" });
+    }
+}

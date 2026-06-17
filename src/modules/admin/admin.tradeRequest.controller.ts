@@ -9,7 +9,7 @@ import { sendPaymentDetailsEmail, sendRateQuotedEmail } from "../../services/ema
  */
 export async function getAdminTradeRequests(req: Request, res: Response) {
     try {
-        const { status, page = 1, limit = 20 } = req.query;
+        const { status, page = 1, limit = 20, search } = req.query;
 
         const where: any = {};
         if (status && status !== "ALL") {
@@ -19,6 +19,43 @@ export async function getAdminTradeRequests(req: Request, res: Response) {
             } else {
                 where.status = status;
             }
+        }
+
+        if (search) {
+            const cleanSearch = (search as string).trim().toLowerCase();
+            const rawIdSearch = cleanSearch.replace("#pe-", "").replace("pe-", "");
+            where.OR = [
+                { id: { contains: rawIdSearch } },
+                { sendCurrency: { contains: cleanSearch, mode: 'insensitive' } },
+                { receiveCurrency: { contains: cleanSearch, mode: 'insensitive' } },
+                { purpose: { contains: cleanSearch, mode: 'insensitive' } },
+                { supplierBusinessName: { contains: cleanSearch, mode: 'insensitive' } },
+                {
+                    customer: {
+                        fullName: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    customer: {
+                        email: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    agent: {
+                        firstName: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    agent: {
+                        lastName: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                },
+                {
+                    agent: {
+                        email: { contains: cleanSearch, mode: 'insensitive' }
+                    }
+                }
+            ];
         }
 
         const skip = (Number(page) - 1) * Number(limit);

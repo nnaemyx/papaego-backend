@@ -14,8 +14,14 @@ export const getSuppliers = async (req: Request, res: Response) => {
             return res.status(404).json({ error: "Customer profile not found" });
         }
 
+        const { includeArchived } = req.query;
+        const where: any = { customerId: customer.id };
+        if (includeArchived !== "true") {
+            where.isArchived = false;
+        }
+
         const suppliers = await prisma.supplier.findMany({
-            where: { customerId: customer.id },
+            where,
             orderBy: { createdAt: "desc" }
         });
 

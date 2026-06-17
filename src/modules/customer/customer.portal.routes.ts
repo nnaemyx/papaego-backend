@@ -106,14 +106,28 @@ export async function checkAndRefreshTradeRequestExpiry(tradeRequest: any): Prom
     return tradeRequest;
 }
 import { customerSignup, uploadCustomerDocument } from "./customer.signup.controller";
-import { createTradeRequest, getCustomerTradeRequests, getTradeRequestById } from "./customer.request.controller";
+import { createTradeRequest, getCustomerTradeRequests, getTradeRequestById, updateCustomerTradeRequest, cancelCustomerTradeRequest } from "./customer.request.controller";
 import { upsertBankDetails, getBankDetails } from "./customer.bank.controller";
+import { createNotification } from "../notifications/notification.service";
 import { getKycStatus, resubmitKyc } from "./customer.kyc.controller";
 import { uploadToCloudinary } from "../../middlewares/upload.middleware";
 import { sendReceiptUploadedEmail } from "../../services/email.service";
 import {
-    checkNegotiationEligibility,
-    requestNegotiation,
+    assertRateNotExpired,
+    isRateExpired,
+    rateExpiresInSeconds,
+    RateExpiredError,
+} from "../../utils/checkRateExpiry";
+import { expireTradeIfNeeded } from "../../jobs/tradeExpiration.job";
+import {
+    checkNegotiationEligibility as checkGlobalNegotiationEligibility,
+    applyNegotiation,
+    isTurnoverTargetMet,
+    isNegotiationFeatureEnabled,
+} from "../trades/negotiation.service";
+import {
+    checkNegotiationEligibility as checkCustomerNegotiationEligibility,
+    requestNegotiation as requestCustomerNegotiation,
 } from "../negotiation/negotiation.controller";
 
 const router = Router();
@@ -205,6 +219,8 @@ router.get("/dashboard/stats", async (req: Request, res: Response) => {
 router.post("/trade-requests", createTradeRequest);
 router.get("/trade-requests", getCustomerTradeRequests);
 router.get("/trade-requests/:id", getTradeRequestById);
+router.put("/trade-requests/:id", updateCustomerTradeRequest);
+router.patch("/trade-requests/:id/cancel", cancelCustomerTradeRequest);
 
 // --- Bank Details ---
 router.post("/bank-details", upsertBankDetails);
@@ -233,9 +249,24 @@ router.patch("/kyc/resubmit", uploadToCloudinary.fields([
 router.get("/trades", async (req: Request, res: Response) => {
     try {
         const customer = (req as any).user.customer;
-        const { status, page = 1, limit = 20 } = req.query;
+        const { status, page = 1, limit = 20, search } = req.query;
         const where: any = { customerId: customer.id };
         if (status && status !== "ALL") where.status = status;
+
+        if (search) {
+            const cleanSearch = (search as string).trim().toLowerCase();
+            const rawIdSearch = cleanSearch.replace("pe-", "");
+            where.AND = [
+                {
+                    OR: [
+                        { id: { contains: rawIdSearch } },
+                        { recipientName: { contains: cleanSearch, mode: "insensitive" } },
+                        { sendCurrency: { contains: cleanSearch, mode: "insensitive" } },
+                        { receiveCurrency: { contains: cleanSearch, mode: "insensitive" } },
+                    ]
+                }
+            ];
+        }
 
         const [trades, total] = await Promise.all([
             prisma.trade.findMany({
@@ -259,6 +290,8 @@ router.get("/trades", async (req: Request, res: Response) => {
             recipientName: t.recipientName,
             payoutAmount: t.payoutAmount,
             lockedUntil: t.lockedUntil,
+            rateExpiresIn: rateExpiresInSeconds(t.lockedUntil),
+            isRateExpired: isRateExpired(t),
             createdAt: t.createdAt.toISOString(),
         }));
 
@@ -280,13 +313,18 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
 
         let trade = await prisma.trade.findFirst({
             where: { id: req.params.id, customerId: customer.id },
+            include: {
+                agent: {
+                    select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true,
+                    }
+                },
+                agentRating: true,
+            }
         });
-
-        if (!trade) {
-            trade = await prisma.trade.findFirst({
-                where: { tradeRequestId: req.params.id, customerId: customer.id },
-            });
-        }
 
         if (trade) {
             // Check expiry & auto-refresh
@@ -353,11 +391,8 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
             ];
 
             // Compute seconds remaining on the rate lock
-            let rateExpiresIn: number | null = null;
-            if (activeTrade.lockedUntil) {
-                const msLeft = new Date(activeTrade.lockedUntil).getTime() - Date.now();
-                rateExpiresIn = msLeft > 0 ? Math.floor(msLeft / 1000) : 0;
-            }
+            const rateExpiresIn = rateExpiresInSeconds(activeTrade.lockedUntil);
+            const isExpired = isRateExpired(activeTrade);
 
             return res.json({
                 id: activeTrade.id,
@@ -370,6 +405,8 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
                 negotiatedRate: activeTrade.negotiatedRate?.toString() || null,
                 negotiationUsed: activeTrade.negotiationUsed,
                 status: activeTrade.status,
+                agent: (activeTrade as any).agent,
+                agentRating: (activeTrade as any).agentRating,
                 paymentMethod: activeTrade.paymentMethod,
                 paymentSource: activeTrade.paymentSource,
                 payoutMethod: activeTrade.payoutMethod,
@@ -379,6 +416,7 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
                 paymentProofUrl: activeTrade.paymentProofUrl,
                 lockedUntil: activeTrade.lockedUntil,
                 rateExpiresIn,
+                isRateExpired: isExpired,
                 paymentAccountName: activeTrade.paymentAccountName,
                 paymentAccountNumber: activeTrade.paymentAccountNumber,
                 paymentBankName: activeTrade.paymentBankName,
@@ -464,9 +502,13 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
         ];
 
         let rateExpiresIn: number | null = null;
-        if (activeRequest.status === "QUOTED" && activeRequest.quotedAt) {
-            const msLeft = new Date(activeRequest.quotedAt).getTime() + 10 * 60 * 1000 - Date.now();
-            rateExpiresIn = msLeft > 0 ? Math.floor(msLeft / 1000) : 0;
+        let isExpired = false;
+        const targetLockTime = activeRequest.quotedAt 
+            ? new Date(new Date(activeRequest.quotedAt).getTime() + 10 * 60 * 1000)
+            : null;
+        if (activeRequest.status === "QUOTED" && targetLockTime) {
+            rateExpiresIn = rateExpiresInSeconds(targetLockTime);
+            isExpired = targetLockTime.getTime() <= Date.now();
         }
 
         return res.json({
@@ -487,8 +529,9 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
             recipientDetails: activeRequest.supplierAccountNumber ? `Bank: ${activeRequest.supplierBankName}, A/C: ${activeRequest.supplierAccountNumber}` : null,
             payoutAmount: activeRequest.payoutAmount?.toString() || null,
             paymentProofUrl: null,
-            lockedUntil: activeRequest.quotedAt ? new Date(new Date(activeRequest.quotedAt).getTime() + 10 * 60 * 1000) : null,
+            lockedUntil: targetLockTime,
             rateExpiresIn,
+            isRateExpired: isExpired,
             paymentAccountName: null,
             paymentAccountNumber: null,
             paymentBankName: null,
@@ -641,6 +684,23 @@ router.patch("/trades/:id/confirm", async (req: Request, res: Response) => {
             return res.status(404).json({ error: "Trade not found" });
         }
 
+        if (!["QUOTED", "SENT_TO_CUSTOMER"].includes(activeTrade.status)) {
+            return res.status(400).json({
+                error: "Trade cannot be confirmed in its current status",
+                code: "INVALID_STATUS",
+            });
+        }
+
+        try {
+            assertRateNotExpired(activeTrade);
+        } catch (error) {
+            if (error instanceof RateExpiredError) {
+                await expireTradeIfNeeded(activeTrade);
+                return res.status(error.statusCode).json({ error: error.message, code: error.code });
+            }
+            throw error;
+        }
+
         await prisma.trade.update({
             where: { id: activeTrade.id },
             data: { status: "CUSTOMER_CONFIRMED" }
@@ -659,6 +719,7 @@ router.patch("/trades/:id/confirm", async (req: Request, res: Response) => {
 
         res.json({ success: true, status: "CUSTOMER_CONFIRMED" });
     } catch (error) {
+        console.error("Error confirming trade:", error);
         res.status(500).json({ error: "Failed to confirm trade" });
     }
 });
@@ -704,7 +765,218 @@ router.patch("/trades/:id/proof", uploadToCloudinary.single("proof"), async (req
 });
 
 // --- Negotiation ---
-router.get("/trades/:id/negotiate/eligibility", checkNegotiationEligibility);
-router.post("/trades/:id/negotiate", requestNegotiation);
+router.get("/trades/:id/negotiate/eligibility", checkCustomerNegotiationEligibility);
+
+/**
+ * GET /customer/portal/trades/:id/negotiation-eligibility
+ * Check if a specific trade can be negotiated via the automatic 0.05% global target rule.
+ */
+router.get("/trades/:id/negotiation-eligibility", async (req: Request, res: Response) => {
+    try {
+        const customer = (req as any).user.customer;
+        const trade = await prisma.trade.findFirst({
+            where: { id: req.params.id, customerId: customer.id },
+        });
+
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        const eligibility = await checkGlobalNegotiationEligibility(trade.id);
+        res.json(eligibility);
+    } catch (error) {
+        console.error("Error checking negotiation eligibility:", error);
+        res.status(500).json({ error: "Failed to check eligibility" });
+    }
+});
+
+/**
+ * POST /customer/portal/trades/:id/negotiate
+ * Handshake for both custom rate submission (body: { requestedRate })
+ * and automatic 0.05% negotiation discount.
+ */
+router.post("/trades/:id/negotiate", async (req: Request, res: Response) => {
+    if (req.body && req.body.requestedRate !== undefined) {
+        return requestCustomerNegotiation(req, res);
+    }
+
+    try {
+        const customer = (req as any).user.customer;
+        const userId = (req as any).user.id;
+        const ip = req.ip || "127.0.0.1";
+
+        const trade = await prisma.trade.findFirst({
+            where: { id: req.params.id, customerId: customer.id },
+        });
+
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        // Check eligibility first
+        const eligibility = await checkGlobalNegotiationEligibility(trade.id);
+        if (!eligibility.eligible) {
+            return res.status(403).json({
+                error: eligibility.reason,
+                eligible: false,
+            });
+        }
+
+        const result = await applyNegotiation(trade.id, userId, ip);
+        res.json(result);
+    } catch (error: any) {
+        console.error("Error applying negotiation:", error);
+
+        if (error.message === "Negotiation has already been used for this trade") {
+            return res.status(409).json({ error: error.message });
+        }
+
+        res.status(500).json({ error: "Failed to apply negotiation" });
+    }
+});
+
+/**
+ * GET /customer/portal/negotiation-status
+ * Global negotiation availability status for the customer.
+ */
+router.get("/negotiation-status", async (req: Request, res: Response) => {
+    try {
+        const [featureEnabled, turnoverMet] = await Promise.all([
+            isNegotiationFeatureEnabled(),
+            isTurnoverTargetMet(),
+        ]);
+
+        res.json({
+            negotiationAvailable: featureEnabled && turnoverMet,
+        });
+    } catch (error) {
+        console.error("Error fetching negotiation status:", error);
+        res.status(500).json({ error: "Failed to fetch status" });
+    }
+});
+
+/**
+ * PATCH /customer/portal/trades/:id/cancel
+ */
+router.patch("/trades/:id/cancel", async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).user.id;
+        const customer = (req as any).user.customer;
+
+        const trade = await prisma.trade.findFirst({
+            where: { id: req.params.id, customerId: customer.id }
+        });
+
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        if (["COMPLETED", "CANCELLED", "EXPIRED"].includes(trade.status)) {
+            return res.status(400).json({ error: `Cannot cancel trade in ${trade.status} status` });
+        }
+
+        const updated = await prisma.trade.update({
+            where: { id: trade.id },
+            data: { status: "CANCELLED" }
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: userId,
+                role: "CUSTOMER",
+                action: "TRADE_CANCELLED_BY_CUSTOMER",
+                entity: "Trade",
+                entityId: trade.id,
+                ip: req.ip || "127.0.0.1"
+            }
+        });
+
+        // Notify assigned agent
+        await createNotification(
+            trade.agentId,
+            "Trade Cancelled by Customer",
+            `Customer has cancelled trade #${trade.id.slice(0, 8).toUpperCase()}.`,
+            "WARNING"
+        );
+
+        res.json({ success: true, status: "CANCELLED" });
+    } catch (error) {
+        console.error("Error cancelling trade:", error);
+        res.status(500).json({ error: "Failed to cancel trade" });
+    }
+});
+
+/**
+ * POST /customer/portal/trades/:id/rate
+ * Rate the agent for a completed trade
+ */
+router.post("/trades/:id/rate", async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).user.id;
+        const { rating, feedback } = req.body;
+
+        if (!rating || rating < 1 || rating > 5) {
+            return res.status(400).json({ error: "Rating must be an integer between 1 and 5" });
+        }
+
+        const customer = (req as any).user.customer;
+
+        const trade = await prisma.trade.findFirst({
+            where: { id: req.params.id, customerId: customer.id }
+        });
+
+        if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+        if (trade.status !== "COMPLETED") {
+            return res.status(400).json({ error: "Only completed trades can be rated" });
+        }
+
+        // Check duplicate
+        const existingRating = await prisma.agentRating.findUnique({
+            where: { tradeId: trade.id }
+        });
+        if (existingRating) {
+            return res.status(400).json({ error: "This transaction has already been rated" });
+        }
+
+        const agentRating = await prisma.agentRating.create({
+            data: {
+                tradeId: trade.id,
+                agentId: trade.agentId,
+                customerId: customer.id,
+                rating: Number(rating),
+                feedback: feedback || null
+            }
+        });
+
+        res.status(201).json(agentRating);
+    } catch (error) {
+        console.error("Error rating agent:", error);
+        res.status(500).json({ error: "Failed to submit agent rating" });
+    }
+});
+
+/**
+ * POST /customer/portal/feedback
+ * General customer feedback capture
+ */
+router.post("/feedback", async (req: Request, res: Response) => {
+    try {
+        const customer = (req as any).user.customer;
+        const { category, message } = req.body;
+
+        if (!message) {
+            return res.status(400).json({ error: "Feedback message is required" });
+        }
+
+        const feedback = await prisma.customerFeedback.create({
+            data: {
+                customerId: customer.id,
+                category: category || "GENERAL",
+                message
+            }
+        });
+
+        res.status(201).json(feedback);
+    } catch (error) {
+        console.error("Error creating feedback:", error);
+        res.status(500).json({ error: "Failed to submit feedback" });
+    }
+});
+
 
 export default router;

@@ -141,7 +141,7 @@ router.get("/reports/oversight", getOversightReport);
 router.get("/reports/corridors", getCorridorReport);
 router.get("/reports/export", exportReport);
 
-// ── Negotiation ────────────────────────────────────────────────────────────────
+// ── Negotiation & Turnover ────────────────────────────────────────────────────
 router.post("/transactions/:id/negotiate/approve", adminApproveNegotiation);
 router.post("/transactions/:id/negotiate/reject", adminRejectNegotiation);
 router.get("/negotiation/config", getNegotiationSettings);

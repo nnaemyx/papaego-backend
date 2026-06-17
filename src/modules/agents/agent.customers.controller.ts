@@ -1,46 +1,58 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 
-/** Compute last-transaction date label and activity status bucket */
-function getActivityStatus(lastTradedAt: Date | null): {
-    lastTransactionAt: string | null;
-    lastTransactionAgo: string;
-    activityStatus: "Active" | "Inactive" | "Dormant";
-} {
-    if (!lastTradedAt) {
-        return {
-            lastTransactionAt: null,
-            lastTransactionAgo: "Never",
-            activityStatus: "Dormant",
-        };
-    }
+/**
+ * Classify a customer's activity status based on their last trade date.
+ * Active: 0–30 days since last trade
+ * Inactive: 31–90 days since last trade
+ * Dormant: 90+ days since last trade (or never traded)
+ */
+function classifyActivityStatus(lastTradeDate: Date | null): string {
+    if (!lastTradeDate) return "Dormant";
 
-    const now = Date.now();
-    const diff = now - lastTradedAt.getTime();
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const daysSinceLast = Math.floor(
+        (Date.now() - lastTradeDate.getTime()) / (1000 * 60 * 60 * 24)
+    );
 
-    let lastTransactionAgo: string;
-    if (days === 0) lastTransactionAgo = "Today";
-    else if (days === 1) lastTransactionAgo = "Yesterday";
-    else if (days < 7) lastTransactionAgo = `${days} days ago`;
-    else if (days < 30) lastTransactionAgo = `${Math.floor(days / 7)} week${Math.floor(days / 7) > 1 ? "s" : ""} ago`;
-    else lastTransactionAgo = `${Math.floor(days / 30)} month${Math.floor(days / 30) > 1 ? "s" : ""} ago`;
-
-    let activityStatus: "Active" | "Inactive" | "Dormant";
-    if (days <= 30) activityStatus = "Active";
-    else if (days <= 90) activityStatus = "Inactive";
-    else activityStatus = "Dormant";
-
-    return {
-        lastTransactionAt: lastTradedAt.toISOString(),
-        lastTransactionAgo,
-        activityStatus,
-    };
+    if (daysSinceLast <= 30) return "Active";
+    if (daysSinceLast <= 90) return "Inactive";
+    return "Dormant";
 }
 
 /**
- * Get customers referred by (or traded with) this agent.
- * Scope: customers whose referringAgentId === agentId OR who have trades with this agent.
+ * Compute a human-readable "time ago" string from a date.
+ */
+function timeAgo(date: Date | null): string {
+    if (!date) return "Never";
+
+    const diffMs = Date.now() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60_000);
+    const diffHours = Math.floor(diffMs / 3_600_000);
+    const diffDays = Math.floor(diffMs / 86_400_000);
+    const diffWeeks = Math.floor(diffDays / 7);
+    const diffMonths = Math.floor(diffDays / 30);
+
+    if (diffMins < 1) return "Just now";
+    if (diffMins < 60) return `${diffMins} minute${diffMins === 1 ? "" : "s"} ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? "" : "s"} ago`;
+    if (diffDays === 1) return "Yesterday";
+    if (diffDays < 7) return `${diffDays} days ago`;
+    if (diffWeeks < 4) return `${diffWeeks} week${diffWeeks === 1 ? "" : "s"} ago`;
+    if (diffMonths < 12) return `${diffMonths} month${diffMonths === 1 ? "" : "s"} ago`;
+    return `${Math.floor(diffMonths / 12)} year${Math.floor(diffMonths / 12) === 1 ? "" : "s"} ago`;
+}
+
+/**
+ * Get all customers assigned to the agent.
+ * Scoped: Agents only see customers who:
+ *   1. Were referred by this agent (referringAgentId)
+ *   2. Have trades assigned to this agent
+ * 
+ * Data restrictions:
+ *   - Transaction COUNT visible (not amounts)
+ *   - Last transaction date with relative time
+ *   - Activity status classification
+ * 
  * GET /api/agent/customers
  */
 export async function getAgentCustomers(req: Request, res: Response) {
@@ -48,19 +60,30 @@ export async function getAgentCustomers(req: Request, res: Response) {
         const agentId = (req as any).user.id;
         const { search, status, activity, dateJoined } = req.query;
 
-        // Customers linked to this agent via referral OR trades
+        // Step 1: Get customer IDs scoped to this agent
+        // Customers who were referred by this agent
+        const referredCustomerIds = await prisma.customer.findMany({
+            where: { referringAgentId: agentId },
+            select: { id: true },
+        }).then(rows => rows.map(r => r.id));
+
+        // Customers who have trades with this agent
         const tradeCustomerIds = await prisma.trade.findMany({
             where: { agentId },
             select: { customerId: true },
             distinct: ["customerId"],
-        });
-        const tradeIds = tradeCustomerIds.map((t) => t.customerId);
+        }).then(rows => rows.map(r => r.customerId));
 
+        // Merge unique customer IDs
+        const allCustomerIds = [...new Set([...referredCustomerIds, ...tradeCustomerIds])];
+
+        if (allCustomerIds.length === 0) {
+            return res.json([]);
+        }
+
+        // Step 2: Build query filters
         const where: any = {
-            OR: [
-                { referringAgentId: agentId },
-                { id: { in: tradeIds } },
-            ],
+            id: { in: allCustomerIds },
         };
 
         if (search) {
@@ -78,7 +101,7 @@ export async function getAgentCustomers(req: Request, res: Response) {
         if (status && status !== "All") {
             if (!where.AND) where.AND = [];
             if (status === "Verified") where.AND.push({ verified: true });
-            if (status === "Pending") where.AND.push({ verified: false });
+            if (status === "Pending" || status === "Failed") where.AND.push({ verified: false });
         }
 
         if (dateJoined) {
@@ -91,34 +114,38 @@ export async function getAgentCustomers(req: Request, res: Response) {
             where.AND.push({ createdAt: { gte: cutoff } });
         }
 
+        // Step 3: Fetch customers
         const customers = await prisma.customer.findMany({
             where,
             orderBy: { createdAt: "desc" },
         });
 
-        // Fetch last trade date per customer in bulk
-        const customerIds = customers.map((c) => c.id);
-        const lastTrades = await prisma.trade.findMany({
-            where: { customerId: { in: customerIds } },
-            orderBy: { createdAt: "desc" },
-            select: { customerId: true, createdAt: true },
+        // Step 4: Get trade counts (NOT amounts) and last trade dates per customer
+        const customerIds = customers.map(c => c.id);
+
+        const tradeCounts = await prisma.trade.groupBy({
+            by: ["customerId"],
+            _count: { id: true },
+            _max: { createdAt: true },
+            where: {
+                customerId: { in: customerIds },
+                agentId, // Only count trades with THIS agent
+            },
         });
 
-        // Build: customerId -> { count, latestDate }
-        const tradeStats: Record<string, { count: number; latestDate: Date | null }> = {};
-        for (const t of lastTrades) {
-            if (!tradeStats[t.customerId]) {
-                tradeStats[t.customerId] = { count: 0, latestDate: null };
-            }
-            tradeStats[t.customerId].count++;
-            if (!tradeStats[t.customerId].latestDate || t.createdAt > tradeStats[t.customerId].latestDate!) {
-                tradeStats[t.customerId].latestDate = t.createdAt;
-            }
-        }
+        const tradeCountMap: Record<string, number> = {};
+        const lastTradeDateMap: Record<string, Date | null> = {};
 
+        tradeCounts.forEach((tc) => {
+            tradeCountMap[tc.customerId] = tc._count.id;
+            lastTradeDateMap[tc.customerId] = tc._max.createdAt;
+        });
+
+        // Step 5: Format response — NO amounts, only counts
         let formatted = customers.map((c) => {
-            const stats = tradeStats[c.id] || { count: 0, latestDate: null };
-            const activity = getActivityStatus(stats.latestDate);
+            const lastTradeDate = lastTradeDateMap[c.id] || null;
+            const activityStatus = classifyActivityStatus(lastTradeDate);
+
             return {
                 id: c.id,
                 customerId: `#CUS-${c.id.slice(0, 5).toUpperCase()}`,
@@ -126,19 +153,22 @@ export async function getAgentCustomers(req: Request, res: Response) {
                 email: c.email || "N/A",
                 phone: c.phone || "N/A",
                 joinDate: new Date(c.createdAt).toLocaleDateString("en-GB"),
-                totalTrades: stats.count,
+                totalTrades: tradeCountMap[c.id] || 0,
+                // NO totalVolume — agents cannot see transaction amounts
                 verificationStatus: c.verified ? "Verified" : "Pending",
                 customerType: "Individual",
-                ...activity,
+                lastActive: timeAgo(lastTradeDate),
+                lastTransactionAt: lastTradeDate?.toISOString() || null,
+                activityStatus, // Active | Inactive | Dormant
                 riskLevel: "Low",
                 referredByThisAgent: c.referringAgentId === agentId,
                 notes: [],
             };
         });
 
-        // Apply activity filter after formatting (client-friendly)
+        // Filter by activity status if requested
         if (activity && activity !== "All") {
-            formatted = formatted.filter((c) => c.activityStatus === activity);
+            formatted = formatted.filter(c => c.activityStatus === activity);
         }
 
         res.json(formatted);
@@ -149,7 +179,7 @@ export async function getAgentCustomers(req: Request, res: Response) {
 }
 
 /**
- * Get single customer details (scoped to agent)
+ * Get single customer details (scoped to agent's customers).
  * GET /api/agent/customers/:id
  */
 export async function getAgentCustomer(req: Request, res: Response) {
@@ -157,30 +187,55 @@ export async function getAgentCustomer(req: Request, res: Response) {
         const agentId = (req as any).user.id;
         const { id } = req.params;
 
+        // Verify this customer belongs to the agent
+        const isReferredCustomer = await prisma.customer.findFirst({
+            where: { id, referringAgentId: agentId },
+        });
+
+        const hasTradeWithAgent = await prisma.trade.findFirst({
+            where: { customerId: id, agentId },
+        });
+
+        if (!isReferredCustomer && !hasTradeWithAgent) {
+            return res.status(403).json({ error: "You do not have access to this customer" });
+        }
+
         const customer = await prisma.customer.findUnique({
             where: { id },
             include: { bankDetails: true },
         });
         if (!customer) return res.status(404).json({ error: "Customer not found" });
 
-        const trades = await prisma.trade.findMany({
-            where: { customerId: id },
-            orderBy: { createdAt: "desc" },
-            take: 5,
+        // Only count trades with this agent
+        const tradesCount = await prisma.trade.count({
+            where: { customerId: id, agentId },
         });
 
-        const lastTrade = trades[0] ?? null;
-        const activity = getActivityStatus(lastTrade ? new Date(lastTrade.createdAt) : null);
+        // Get last trade date
+        const lastTrade = await prisma.trade.findFirst({
+            where: { customerId: id, agentId },
+            orderBy: { createdAt: "desc" },
+            select: { createdAt: true },
+        });
 
-        const safeTrades = trades.map((t) => ({
-            id: t.id,
-            sendCurrency: t.sendCurrency,
-            receiveCurrency: t.receiveCurrency,
-            status: t.status,
-            createdAt: t.createdAt.toISOString(),
-        }));
+        const lastTradeDate = lastTrade?.createdAt || null;
 
-        res.json({
+        // Get recent trades — count only, no amounts
+        const recentTrades = await prisma.trade.findMany({
+            where: { customerId: customer.id, agentId },
+            take: 5,
+            orderBy: { createdAt: "desc" },
+            select: {
+                id: true,
+                status: true,
+                sendCurrency: true,
+                receiveCurrency: true,
+                createdAt: true,
+                // Deliberately excluding: amount, fxRate, payoutAmount
+            },
+        });
+
+        const formatted = {
             id: customer.id,
             customerId: `#CUS-${customer.id.slice(0, 5).toUpperCase()}`,
             name: customer.fullName,
@@ -188,17 +243,22 @@ export async function getAgentCustomer(req: Request, res: Response) {
             phone: customer.phone || "N/A",
             dateJoined: customer.createdAt.toISOString(),
             joinDate: new Date(customer.createdAt).toLocaleDateString("en-GB"),
-            totalTransactions: trades.length,
-            totalTrades: trades.length,
-            recentTrades: safeTrades,
+            totalTransactions: tradesCount,
+            totalTrades: tradesCount,
+            activityLevel: tradesCount > 10 ? "High" : tradesCount > 4 ? "Medium" : "Low",
+            activityStatus: classifyActivityStatus(lastTradeDate),
+            lastActive: timeAgo(lastTradeDate),
+            lastTransactionAt: lastTradeDate?.toISOString() || null,
+            recentTrades,
             verificationStatus: customer.verified ? "Verified" : "Pending",
             customerType: "Individual",
-            ...activity,
             riskLevel: "Low",
             referredByThisAgent: customer.referringAgentId === agentId,
             bankDetails: customer.bankDetails,
             notes: [],
-        });
+        };
+
+        res.json(formatted);
     } catch (error) {
         console.error("Error fetching customer details:", error);
         res.status(500).json({ error: "Failed to fetch customer details" });
@@ -206,59 +266,79 @@ export async function getAgentCustomer(req: Request, res: Response) {
 }
 
 /**
- * Get stats for agent's scoped customers
+ * Get stats for agent's customers only (scoped, not global).
  * GET /api/agent/customers/stats
  */
 export async function getAgentCustomerStats(req: Request, res: Response) {
     try {
         const agentId = (req as any).user.id;
 
-        // Customers linked to this agent
+        // Get customer IDs scoped to this agent
+        const referredCustomerIds = await prisma.customer.findMany({
+            where: { referringAgentId: agentId },
+            select: { id: true },
+        }).then(rows => rows.map(r => r.id));
+
         const tradeCustomerIds = await prisma.trade.findMany({
             where: { agentId },
             select: { customerId: true },
             distinct: ["customerId"],
-        });
-        const tradeIds = tradeCustomerIds.map((t) => t.customerId);
+        }).then(rows => rows.map(r => r.customerId));
 
-        const customerIds = await prisma.customer.findMany({
+        const allCustomerIds = [...new Set([...referredCustomerIds, ...tradeCustomerIds])];
+
+        const [totalCustomers, verifiedCustomers] = await Promise.all([
+            prisma.customer.count({ where: { id: { in: allCustomerIds } } }),
+            prisma.customer.count({ where: { id: { in: allCustomerIds }, verified: true } }),
+        ]);
+
+        // Active today: customers with trades today
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const activeTodayCount = await prisma.trade.groupBy({
+            by: ["customerId"],
             where: {
-                OR: [{ referringAgentId: agentId }, { id: { in: tradeIds } }],
+                agentId,
+                createdAt: { gte: today },
             },
-            select: { id: true, verified: true },
+        }).then(rows => rows.length);
+
+        // Classify customers by activity
+        const tradeDates = await prisma.trade.groupBy({
+            by: ["customerId"],
+            _max: { createdAt: true },
+            where: {
+                customerId: { in: allCustomerIds },
+                agentId,
+            },
         });
 
-        const totalCustomers = customerIds.length;
-        const verifiedCustomers = customerIds.filter((c) => c.verified).length;
+        let activeCount = 0;
+        let inactiveCount = 0;
+        let dormantCount = 0;
 
-        // Activity buckets
-        const ids = customerIds.map((c) => c.id);
-        const lastTrades = await prisma.trade.findMany({
-            where: { customerId: { in: ids } },
-            orderBy: { createdAt: "desc" },
-            select: { customerId: true, createdAt: true },
+        tradeDates.forEach(td => {
+            const status = classifyActivityStatus(td._max.createdAt);
+            if (status === "Active") activeCount++;
+            else if (status === "Inactive") inactiveCount++;
+            else dormantCount++;
         });
 
-        const latestByCustomer: Record<string, Date> = {};
-        for (const t of lastTrades) {
-            if (!latestByCustomer[t.customerId]) latestByCustomer[t.customerId] = t.createdAt;
-        }
-
-        let active = 0, inactive = 0, dormant = 0;
-        for (const c of customerIds) {
-            const last = latestByCustomer[c.id] || null;
-            const { activityStatus } = getActivityStatus(last);
-            if (activityStatus === "Active") active++;
-            else if (activityStatus === "Inactive") inactive++;
-            else dormant++;
-        }
+        // Customers with no trades are Dormant
+        const customersWithTrades = new Set(tradeDates.map(td => td.customerId));
+        const customersWithoutTrades = allCustomerIds.filter(id => !customersWithTrades.has(id));
+        dormantCount += customersWithoutTrades.length;
 
         res.json({
             totalCustomers,
             verifiedCustomers,
-            activeCustomers: active,
-            inactiveCustomers: inactive,
-            dormantCustomers: dormant,
+            activeCustomersToday: activeTodayCount,
+            activityBreakdown: {
+                active: activeCount,
+                inactive: inactiveCount,
+                dormant: dormantCount,
+            },
         });
     } catch (error) {
         console.error("Error fetching stats:", error);

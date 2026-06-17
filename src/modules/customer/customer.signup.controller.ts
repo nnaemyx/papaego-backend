@@ -18,7 +18,9 @@ export async function uploadCustomerDocument(req: Request, res: Response) {
 
 /**
  * Customer self-registration endpoint
- * Creates a User (role=CUSTOMER) and associated Customer profile in one transaction
+ * Creates a User (role=CUSTOMER) and associated Customer profile in one transaction.
+ * Supports referral code attribution — if a valid agent referral code is provided,
+ * the customer is linked to the referring agent.
  */
 export async function customerSignup(req: Request, res: Response, next: NextFunction) {
     try {
@@ -39,7 +41,7 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
             // Document URLs (uploaded separately via file upload endpoints)
             governmentIdUrl,
             proofOfAddressUrl,
-            // Referral (Sprint 2)
+            // Referral
             referralCode,
         } = req.body;
 
@@ -76,22 +78,45 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
             return res.status(409).json({ error: "An account with this email already exists" });
         }
 
-        const hashedPassword = await bcrypt.hash(password, 10);
-
-        // Resolve referring agent from referralCode (format: REF-<licenseId>)
+        // ── Referral Code Validation ─────────────────────────────────────
         let referringAgentId: string | null = null;
+        let validatedReferralCode: string | null = null;
+        let referralType: string | null = null;
+
         if (referralCode && typeof referralCode === "string") {
-            const normalised = referralCode.trim().toUpperCase();
-            // Strip the REF- prefix if present
-            const licenseId = normalised.startsWith("REF-") ? normalised.slice(4) : normalised;
-            if (licenseId) {
-                const agentProfile = await prisma.agentProfile.findFirst({
-                    where: { licenseId },
-                    select: { userId: true },
-                });
-                referringAgentId = agentProfile?.userId ?? null;
+            const trimmedCode = referralCode.trim().toUpperCase();
+
+            // 1. Try finding by referralCode
+            let agentProfile = await prisma.agentProfile.findFirst({
+                where: { referralCode: trimmedCode },
+                include: { user: { select: { id: true, isActive: true } } },
+            });
+
+            // 2. If not found, try finding by licenseId (with or without REF- prefix)
+            if (!agentProfile) {
+                const licenseId = trimmedCode.startsWith("REF-") ? trimmedCode.slice(4) : trimmedCode;
+                if (licenseId) {
+                    agentProfile = await prisma.agentProfile.findFirst({
+                        where: { licenseId },
+                        include: { user: { select: { id: true, isActive: true } } },
+                    });
+                }
+            }
+
+            if (agentProfile) {
+                if (agentProfile.user.isActive) {
+                    referringAgentId = agentProfile.userId;
+                    validatedReferralCode = trimmedCode;
+                    referralType = "AGENT";
+                } else {
+                    console.warn(`Referral code ${trimmedCode} belongs to an inactive agent`);
+                }
+            } else {
+                console.warn(`Invalid referral code provided: ${trimmedCode}`);
             }
         }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
 
         // Create user and customer profile in a transaction
         const result = await prisma.$transaction(async (tx) => {
@@ -123,9 +148,11 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
                     governmentIdUrl: governmentIdUrl || null,
                     proofOfAddressUrl: proofOfAddressUrl || null,
                     verified: false,
+                    // Referral attribution
+                    referringAgentId,
+                    referralCode: validatedReferralCode || (referralCode?.trim() || null),
+                    referralType: referralType || "AGENT",
                     kycStatus: (governmentIdUrl && proofOfAddressUrl) ? "SUBMITTED" : "NOT_SUBMITTED",
-                    referringAgentId: referringAgentId,
-                    referralCode: referralCode?.trim() || null,
                 },
             });
 
@@ -167,6 +194,7 @@ export async function customerSignup(req: Request, res: Response, next: NextFunc
                 id: result.customer.id,
                 fullName: result.customer.fullName,
                 verified: result.customer.verified,
+                referralApplied: !!referringAgentId,
             },
             token,
         });
