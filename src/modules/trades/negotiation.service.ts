@@ -102,14 +102,16 @@ export interface NegotiationEligibility {
 }
 
 /**
- * Check whether a trade is eligible for negotiation.
+ * Check whether a trade/tradeRequest is eligible for negotiation.
  */
 export async function checkNegotiationEligibility(
     tradeId: string
 ): Promise<NegotiationEligibility> {
     const trade = await prisma.trade.findUnique({ where: { id: tradeId } });
+    const tradeRequest = trade ? null : await prisma.tradeRequest.findUnique({ where: { id: tradeId } });
+    const activeItem = trade || tradeRequest;
 
-    if (!trade) {
+    if (!activeItem) {
         return {
             eligible: false,
             reason: "Trade not found",
@@ -119,6 +121,8 @@ export async function checkNegotiationEligibility(
             targetTurnover: 0,
         };
     }
+
+    const isTradeRequest = !trade;
 
     const featureEnabled = await isNegotiationFeatureEnabled();
     if (!featureEnabled) {
@@ -132,7 +136,7 @@ export async function checkNegotiationEligibility(
         };
     }
 
-    if (trade.negotiationUsed) {
+    if (activeItem.negotiationUsed) {
         return {
             eligible: false,
             reason: "Negotiation has already been used for this trade",
@@ -143,7 +147,7 @@ export async function checkNegotiationEligibility(
         };
     }
 
-    if (!trade.fxRate) {
+    if (!activeItem.fxRate) {
         return {
             eligible: false,
             reason: "Trade has no quoted rate yet",
@@ -193,7 +197,7 @@ export interface NegotiationResult {
 }
 
 /**
- * Apply the fixed 0.05% negotiation discount to a trade.
+ * Apply the fixed 0.05% negotiation discount to a trade / tradeRequest.
  * 
  * Formula: new_rate = base_rate × (1 - 0.0005)
  * Display: Math.floor(new_rate) — rounded down to nearest whole number
@@ -209,63 +213,121 @@ export async function applyNegotiation(
     return await prisma.$transaction(async (tx) => {
         // Re-fetch inside transaction with lock semantics
         const trade = await tx.trade.findUnique({ where: { id: tradeId } });
+        const tradeRequest = trade ? null : await tx.tradeRequest.findUnique({ where: { id: tradeId } });
+        const activeItem = trade || tradeRequest;
 
-        if (!trade) {
+        if (!activeItem) {
             throw new Error("Trade not found");
         }
 
+        const isTradeRequest = !trade;
+
         // Double-check: block second attempts at DB level
-        if (trade.negotiationUsed) {
+        if (activeItem.negotiationUsed) {
             throw new Error("Negotiation has already been used for this trade");
         }
 
-        if (!trade.fxRate) {
+        if (!activeItem.fxRate) {
             throw new Error("Trade has no quoted rate");
         }
 
-        const originalRate = Number(trade.fxRate);
+        const originalRate = Number(activeItem.fxRate);
         const rawNewRate = originalRate * (1 - NEGOTIATION_DISCOUNT);
         const negotiatedRate = Math.floor(rawNewRate); // Round down to nearest whole number
 
-        // Update trade with negotiated rate
-        await tx.trade.update({
-            where: { id: tradeId },
-            data: {
-                originalFxRate: originalRate,
-                negotiatedRate: negotiatedRate,
-                fxRate: negotiatedRate, // Update active rate
-                negotiationUsed: true,
-            },
-        });
+        if (isTradeRequest) {
+            const amount = Number(activeItem.amount);
+            const payoutAmountVal = activeItem.sendCurrency === 'NGN' 
+                ? (amount / negotiatedRate) 
+                : (amount * negotiatedRate);
 
-        // Create immutable negotiation log
-        await tx.negotiationLog.create({
-            data: {
-                tradeId,
-                userId,
-                originalRate: originalRate,
-                newRate: negotiatedRate,
-                discount: NEGOTIATION_DISCOUNT,
-            },
-        });
-
-        // Create audit log
-        await tx.auditLog.create({
-            data: {
-                actorId: userId,
-                role: "CUSTOMER", // Negotiation is customer-initiated
-                action: "NEGOTIATION_APPLIED",
-                entity: "Trade",
-                entityId: tradeId,
-                ip,
-                metadata: {
-                    originalRate,
-                    negotiatedRate,
-                    discount: NEGOTIATION_DISCOUNT,
-                    rawCalculation: rawNewRate,
+            // Update tradeRequest with negotiated rate
+            await tx.tradeRequest.update({
+                where: { id: tradeId },
+                data: {
+                    originalFxRate: originalRate,
+                    negotiatedRate: negotiatedRate,
+                    fxRate: negotiatedRate, // Update active rate
+                    payoutAmount: payoutAmountVal,
+                    negotiationUsed: true,
                 },
-            },
-        });
+            });
+
+            // Create immutable negotiation log
+            await tx.negotiationLog.create({
+                data: {
+                    tradeId,
+                    userId,
+                    originalRate: originalRate,
+                    newRate: negotiatedRate,
+                    discount: NEGOTIATION_DISCOUNT,
+                },
+            });
+
+            // Create audit log
+            await tx.auditLog.create({
+                data: {
+                    actorId: userId,
+                    role: "CUSTOMER", // Negotiation is customer-initiated
+                    action: "NEGOTIATION_APPLIED",
+                    entity: "TradeRequest",
+                    entityId: tradeId,
+                    ip,
+                    metadata: {
+                        originalRate,
+                        negotiatedRate,
+                        discount: NEGOTIATION_DISCOUNT,
+                        rawCalculation: rawNewRate,
+                    },
+                },
+            });
+        } else {
+            const amount = Number(activeItem.amount);
+            const payoutAmountVal = activeItem.sendCurrency === 'NGN' 
+                ? (amount / negotiatedRate) 
+                : (amount * negotiatedRate);
+
+            // Update trade with negotiated rate
+            await tx.trade.update({
+                where: { id: tradeId },
+                data: {
+                    originalFxRate: originalRate,
+                    negotiatedRate: negotiatedRate,
+                    fxRate: negotiatedRate, // Update active rate
+                    payoutAmount: payoutAmountVal.toFixed(2),
+                    negotiationUsed: true,
+                },
+            });
+
+            // Create immutable negotiation log
+            await tx.negotiationLog.create({
+                data: {
+                    tradeId,
+                    userId,
+                    originalRate: originalRate,
+                    newRate: negotiatedRate,
+                    discount: NEGOTIATION_DISCOUNT,
+                },
+            });
+
+            // Create audit log
+            await tx.auditLog.create({
+                data: {
+                    actorId: userId,
+                    role: "CUSTOMER", // Negotiation is customer-initiated
+                    action: "NEGOTIATION_APPLIED",
+                    entity: "Trade",
+                    entityId: tradeId,
+                    ip,
+                    metadata: {
+                        originalRate,
+                        negotiatedRate,
+                        discount: NEGOTIATION_DISCOUNT,
+                        rawCalculation: rawNewRate,
+                    },
+                },
+            });
+        }
 
         return {
             success: true,

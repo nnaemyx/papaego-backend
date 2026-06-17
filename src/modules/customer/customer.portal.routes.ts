@@ -518,9 +518,9 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
             sendCurrency: activeRequest.sendCurrency,
             receiveCurrency: activeRequest.receiveCurrency,
             fxRate: activeRequest.fxRate?.toString() || null,
-            originalFxRate: activeRequest.fxRate?.toString() || null,
-            negotiatedRate: null,
-            negotiationUsed: false,
+            originalFxRate: (activeRequest as any).originalFxRate?.toString() || activeRequest.fxRate?.toString() || null,
+            negotiatedRate: (activeRequest as any).negotiatedRate?.toString() || null,
+            negotiationUsed: Boolean((activeRequest as any).negotiationUsed),
             status: activeRequest.status,
             paymentMethod: null,
             paymentSource: null,
@@ -774,11 +774,21 @@ router.get("/trades/:id/negotiate/eligibility", checkCustomerNegotiationEligibil
 router.get("/trades/:id/negotiation-eligibility", async (req: Request, res: Response) => {
     try {
         const customer = (req as any).user.customer;
-        const trade = await prisma.trade.findFirst({
+        let trade = await prisma.trade.findFirst({
             where: { id: req.params.id, customerId: customer.id },
         });
 
-        if (!trade) return res.status(404).json({ error: "Trade not found" });
+        // Fallback to TradeRequest if no Trade record exists
+        if (!trade) {
+            const tradeRequest = await prisma.tradeRequest.findFirst({
+                where: { id: req.params.id, customerId: customer.id },
+            });
+            if (!tradeRequest) return res.status(404).json({ error: "Trade not found" });
+
+            // Use the global eligibility check which now supports TradeRequest IDs
+            const eligibility = await checkGlobalNegotiationEligibility(tradeRequest.id);
+            return res.json(eligibility);
+        }
 
         const eligibility = await checkGlobalNegotiationEligibility(trade.id);
         res.json(eligibility);
@@ -803,11 +813,29 @@ router.post("/trades/:id/negotiate", async (req: Request, res: Response) => {
         const userId = (req as any).user.id;
         const ip = req.ip || "127.0.0.1";
 
-        const trade = await prisma.trade.findFirst({
+        let trade = await prisma.trade.findFirst({
             where: { id: req.params.id, customerId: customer.id },
         });
 
-        if (!trade) return res.status(404).json({ error: "Trade not found" });
+        // Fallback to TradeRequest if no Trade record exists
+        if (!trade) {
+            const tradeRequest = await prisma.tradeRequest.findFirst({
+                where: { id: req.params.id, customerId: customer.id },
+            });
+            if (!tradeRequest) return res.status(404).json({ error: "Trade not found" });
+
+            // Check eligibility first
+            const eligibility = await checkGlobalNegotiationEligibility(tradeRequest.id);
+            if (!eligibility.eligible) {
+                return res.status(403).json({
+                    error: eligibility.reason,
+                    eligible: false,
+                });
+            }
+
+            const result = await applyNegotiation(tradeRequest.id, userId, ip);
+            return res.json(result);
+        }
 
         // Check eligibility first
         const eligibility = await checkGlobalNegotiationEligibility(trade.id);

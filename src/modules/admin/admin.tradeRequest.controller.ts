@@ -124,6 +124,9 @@ export async function getAdminTradeRequests(req: Request, res: Response) {
                 address: r.supplierAddress,
                 invoiceUrl: r.invoiceUrl,
             },
+            negotiatedRate: r.negotiatedRate ? r.negotiatedRate.toString() : null,
+            originalFxRate: r.originalFxRate ? r.originalFxRate.toString() : null,
+            negotiationUsed: r.negotiationUsed,
         }));
 
         res.json({ requests: formatted, total, page: Number(page), limit: Number(limit) });
@@ -430,6 +433,9 @@ export async function getAdminTradeRequest(req: Request, res: Response) {
                 address: (request as any).supplierAddress,
                 invoiceUrl: (request as any).invoiceUrl,
             },
+            negotiatedRate: request.negotiatedRate ? request.negotiatedRate.toString() : null,
+            originalFxRate: request.originalFxRate ? request.originalFxRate.toString() : null,
+            negotiationUsed: request.negotiationUsed,
             linkedTrade: linkedTrade
                 ? {
                     id: linkedTrade.id,

@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { Decimal } from "@prisma/client/runtime/library";
-import { checkAndRefreshTradeExpiry } from "../customer/customer.portal.routes";
+import { checkAndRefreshTradeExpiry, checkAndRefreshTradeRequestExpiry } from "../customer/customer.portal.routes";
 
 /** Default negotiation config keys stored in SystemConfig */
 const CONFIG_KEY = "negotiation_config";
@@ -92,18 +92,30 @@ export async function checkNegotiationEligibility(req: Request, res: Response) {
                 where: { tradeRequestId: tradeId, customerId: customer.id },
             });
         }
-        if (!trade) return res.status(404).json({ error: "Trade not found" });
 
-        const activeTrade = await checkAndRefreshTradeExpiry(trade);
-        if (!activeTrade) {
-            return res.status(404).json({ error: "Trade not found" });
+        let tradeRequest = null;
+        if (!trade) {
+            tradeRequest = await prisma.tradeRequest.findFirst({
+                where: { id: tradeId, customerId: customer.id },
+            });
         }
 
-        if (!["QUOTED", "SENT_TO_CUSTOMER"].includes(activeTrade.status)) {
-            return res.json({ eligible: false, reason: "Trade is not in a quotable state" });
+        if (!trade && !tradeRequest) return res.status(404).json({ error: "Trade not found" });
+
+        const isTradeRequest = !trade;
+        const activeItem = isTradeRequest 
+            ? await checkAndRefreshTradeRequestExpiry(tradeRequest)
+            : await checkAndRefreshTradeExpiry(trade);
+
+        if (!activeItem) {
+            return res.status(404).json({ error: isTradeRequest ? "TradeRequest not found" : "Trade not found" });
         }
 
-        if (activeTrade.negotiationUsed) {
+        if (!["QUOTED", "SENT_TO_CUSTOMER"].includes(activeItem.status)) {
+            return res.json({ eligible: false, reason: "Trade is not in a negotiable state" });
+        }
+
+        if (activeItem.negotiationUsed) {
             return res.json({ eligible: false, reason: "Negotiation already used for this trade" });
         }
 
@@ -177,20 +189,32 @@ export async function requestNegotiation(req: Request, res: Response) {
                 where: { tradeRequestId: tradeId, customerId: customer.id },
             });
         }
-        if (!trade) return res.status(404).json({ error: "Trade not found" });
 
-        const activeTrade = await checkAndRefreshTradeExpiry(trade);
-        if (!activeTrade) {
-            return res.status(404).json({ error: "Trade not found" });
+        let tradeRequest = null;
+        if (!trade) {
+            tradeRequest = await prisma.tradeRequest.findFirst({
+                where: { id: tradeId, customerId: customer.id },
+            });
         }
 
-        if (!["QUOTED", "SENT_TO_CUSTOMER"].includes(activeTrade.status)) {
-            return res.status(409).json({ error: "Trade is not in a negotiable state" });
+        if (!trade && !tradeRequest) return res.status(404).json({ error: "Trade not found" });
+
+        const isTradeRequest = !trade;
+        const activeItem = isTradeRequest 
+            ? await checkAndRefreshTradeRequestExpiry(tradeRequest)
+            : await checkAndRefreshTradeExpiry(trade);
+
+        if (!activeItem) {
+            return res.status(404).json({ error: isTradeRequest ? "TradeRequest not found" : "Trade not found" });
         }
-        if (activeTrade.negotiationUsed) {
+
+        if (!["QUOTED", "SENT_TO_CUSTOMER"].includes(activeItem.status)) {
+            return res.status(409).json({ error: isTradeRequest ? "TradeRequest is not in a negotiable state" : "Trade is not in a negotiable state" });
+        }
+        if (activeItem.negotiationUsed) {
             return res.status(409).json({ error: "Negotiation already used for this trade" });
         }
-        if (!activeTrade.fxRate) {
+        if (!activeItem.fxRate) {
             return res.status(409).json({ error: "Trade has no rate to negotiate against" });
         }
 
@@ -199,7 +223,7 @@ export async function requestNegotiation(req: Request, res: Response) {
             return res.status(403).json({ error: "Rate negotiation is currently disabled" });
         }
 
-        const originalRate = Number(activeTrade.fxRate);
+        const originalRate = Number(activeItem.fxRate);
         const requested = Number(requestedRate);
         const minAllowed = originalRate * (1 - config.maxDiscountPct);
 
@@ -236,11 +260,9 @@ export async function requestNegotiation(req: Request, res: Response) {
 
         const discount = ((originalRate - requested) / originalRate) * 100;
 
-        // Store negotiation request in SystemConfig keyed by tradeId (lightweight – no new table needed at request stage)
-        // Persist negotiation request as a pending NegotiationLog (newRate = 0 means pending)
         await prisma.negotiationLog.create({
             data: {
-                tradeId: activeTrade.id,
+                tradeId: activeItem.id,
                 userId: (req as any).user.id,
                 originalRate: new Decimal(originalRate),
                 newRate: new Decimal(requested),
@@ -248,30 +270,55 @@ export async function requestNegotiation(req: Request, res: Response) {
             },
         });
 
-        // Mark trade as negotiation pending (store requested rate in originalFxRate temporarily)
-        await prisma.trade.update({
-            where: { id: activeTrade.id },
-            data: {
-                originalFxRate: new Decimal(originalRate),
-                negotiatedRate: new Decimal(requested),
-            },
-        });
-
-        await prisma.auditLog.create({
-            data: {
-                actorId: (req as any).user.id,
-                role: "CUSTOMER",
-                action: "NEGOTIATION_REQUESTED",
-                entity: "Trade",
-                entityId: activeTrade.id,
-                ip: req.ip || "127.0.0.1",
-                metadata: {
-                    originalRate,
-                    requestedRate: requested,
-                    discountPct: discount.toFixed(2),
+        if (isTradeRequest) {
+            await prisma.tradeRequest.update({
+                where: { id: activeItem.id },
+                data: {
+                    originalFxRate: new Decimal(originalRate),
+                    negotiatedRate: new Decimal(requested),
                 },
-            },
-        });
+            });
+
+            await prisma.auditLog.create({
+                data: {
+                    actorId: (req as any).user.id,
+                    role: "CUSTOMER",
+                    action: "NEGOTIATION_REQUESTED",
+                    entity: "TradeRequest",
+                    entityId: activeItem.id,
+                    ip: req.ip || "127.0.0.1",
+                    metadata: {
+                        originalRate,
+                        requestedRate: requested,
+                        discountPct: discount.toFixed(2),
+                    },
+                },
+            });
+        } else {
+            await prisma.trade.update({
+                where: { id: activeItem.id },
+                data: {
+                    originalFxRate: new Decimal(originalRate),
+                    negotiatedRate: new Decimal(requested),
+                },
+            });
+
+            await prisma.auditLog.create({
+                data: {
+                    actorId: (req as any).user.id,
+                    role: "CUSTOMER",
+                    action: "NEGOTIATION_REQUESTED",
+                    entity: "Trade",
+                    entityId: activeItem.id,
+                    ip: req.ip || "127.0.0.1",
+                    metadata: {
+                        originalRate,
+                        requestedRate: requested,
+                        discountPct: discount.toFixed(2),
+                    },
+                },
+            });
+        }
 
         res.json({
             success: true,
@@ -295,39 +342,83 @@ export async function adminApproveNegotiation(req: Request, res: Response) {
         const { id: tradeId } = req.params;
 
         const trade = await prisma.trade.findUnique({ where: { id: tradeId } });
-        if (!trade) return res.status(404).json({ error: "Trade not found" });
+        const tradeRequest = trade ? null : await prisma.tradeRequest.findUnique({ where: { id: tradeId } });
+        const activeItem = trade || tradeRequest;
 
-        if (!trade.negotiatedRate || !trade.originalFxRate) {
+        if (!activeItem) return res.status(404).json({ error: "Trade not found" });
+
+        const isTradeRequest = !trade;
+
+        if (!activeItem.negotiatedRate || !activeItem.originalFxRate) {
             return res.status(409).json({ error: "No pending negotiation on this trade" });
         }
-        if (trade.negotiationUsed) {
+        if (activeItem.negotiationUsed) {
             return res.status(409).json({ error: "Negotiation already settled" });
         }
 
-        await prisma.trade.update({
-            where: { id: tradeId },
-            data: {
-                fxRate: trade.negotiatedRate,
-                negotiationUsed: true,
-            },
-        });
+        if (isTradeRequest) {
+            const amount = Number(activeItem.amount);
+            const negotiatedRateVal = Number(activeItem.negotiatedRate);
+            const payoutAmountVal = activeItem.sendCurrency === 'NGN' 
+                ? (amount / negotiatedRateVal) 
+                : (amount * negotiatedRateVal);
 
-        await prisma.auditLog.create({
-            data: {
-                actorId: (req as any).user.id,
-                role: "ADMIN",
-                action: "NEGOTIATION_APPROVED",
-                entity: "Trade",
-                entityId: tradeId,
-                ip: req.ip || "127.0.0.1",
-                metadata: {
-                    originalRate: trade.originalFxRate?.toString(),
-                    approvedRate: trade.negotiatedRate?.toString(),
+            await prisma.tradeRequest.update({
+                where: { id: tradeId },
+                data: {
+                    fxRate: activeItem.negotiatedRate,
+                    payoutAmount: new Decimal(payoutAmountVal),
+                    negotiationUsed: true,
                 },
-            },
-        });
+            });
 
-        res.json({ success: true, newFxRate: trade.negotiatedRate?.toString() });
+            await prisma.auditLog.create({
+                data: {
+                    actorId: (req as any).user.id,
+                    role: "ADMIN",
+                    action: "NEGOTIATION_APPROVED",
+                    entity: "TradeRequest",
+                    entityId: tradeId,
+                    ip: req.ip || "127.0.0.1",
+                    metadata: {
+                        originalRate: activeItem.originalFxRate?.toString(),
+                        approvedRate: activeItem.negotiatedRate?.toString(),
+                    },
+                },
+            });
+        } else {
+            const amount = Number(activeItem.amount);
+            const negotiatedRateVal = Number(activeItem.negotiatedRate);
+            const payoutAmountVal = activeItem.sendCurrency === 'NGN' 
+                ? (amount / negotiatedRateVal) 
+                : (amount * negotiatedRateVal);
+
+            await prisma.trade.update({
+                where: { id: tradeId },
+                data: {
+                    fxRate: activeItem.negotiatedRate,
+                    payoutAmount: payoutAmountVal.toFixed(2),
+                    negotiationUsed: true,
+                },
+            });
+
+            await prisma.auditLog.create({
+                data: {
+                    actorId: (req as any).user.id,
+                    role: "ADMIN",
+                    action: "NEGOTIATION_APPROVED",
+                    entity: "Trade",
+                    entityId: tradeId,
+                    ip: req.ip || "127.0.0.1",
+                    metadata: {
+                        originalRate: activeItem.originalFxRate?.toString(),
+                        approvedRate: activeItem.negotiatedRate?.toString(),
+                    },
+                },
+            });
+        }
+
+        res.json({ success: true, newFxRate: activeItem.negotiatedRate?.toString() });
     } catch (err) {
         console.error("[Negotiation] admin approve error:", err);
         res.status(500).json({ error: "Failed to approve negotiation" });
@@ -343,32 +434,59 @@ export async function adminRejectNegotiation(req: Request, res: Response) {
         const { id: tradeId } = req.params;
 
         const trade = await prisma.trade.findUnique({ where: { id: tradeId } });
-        if (!trade) return res.status(404).json({ error: "Trade not found" });
+        const tradeRequest = trade ? null : await prisma.tradeRequest.findUnique({ where: { id: tradeId } });
+        const activeItem = trade || tradeRequest;
 
-        if (!trade.negotiatedRate) {
+        if (!activeItem) return res.status(404).json({ error: "Trade not found" });
+
+        const isTradeRequest = !trade;
+
+        if (!activeItem.negotiatedRate) {
             return res.status(409).json({ error: "No pending negotiation on this trade" });
         }
 
         // Clear pending negotiation fields but keep original rate untouched
-        await prisma.trade.update({
-            where: { id: tradeId },
-            data: {
-                negotiatedRate: null,
-                negotiationUsed: true, // Consumed — customer cannot re-negotiate
-            },
-        });
+        if (isTradeRequest) {
+            await prisma.tradeRequest.update({
+                where: { id: tradeId },
+                data: {
+                    negotiatedRate: null,
+                    negotiationUsed: true, // Consumed — customer cannot re-negotiate
+                },
+            });
 
-        await prisma.auditLog.create({
-            data: {
-                actorId: (req as any).user.id,
-                role: "ADMIN",
-                action: "NEGOTIATION_REJECTED",
-                entity: "Trade",
-                entityId: tradeId,
-                ip: req.ip || "127.0.0.1",
-                metadata: { requestedRate: trade.negotiatedRate?.toString() },
-            },
-        });
+            await prisma.auditLog.create({
+                data: {
+                    actorId: (req as any).user.id,
+                    role: "ADMIN",
+                    action: "NEGOTIATION_REJECTED",
+                    entity: "TradeRequest",
+                    entityId: tradeId,
+                    ip: req.ip || "127.0.0.1",
+                    metadata: { requestedRate: activeItem.negotiatedRate?.toString() },
+                },
+            });
+        } else {
+            await prisma.trade.update({
+                where: { id: tradeId },
+                data: {
+                    negotiatedRate: null,
+                    negotiationUsed: true, // Consumed — customer cannot re-negotiate
+                },
+            });
+
+            await prisma.auditLog.create({
+                data: {
+                    actorId: (req as any).user.id,
+                    role: "ADMIN",
+                    action: "NEGOTIATION_REJECTED",
+                    entity: "Trade",
+                    entityId: tradeId,
+                    ip: req.ip || "127.0.0.1",
+                    metadata: { requestedRate: activeItem.negotiatedRate?.toString() },
+                },
+            });
+        }
 
         res.json({ success: true, message: "Negotiation rejected. Original rate retained." });
     } catch (err) {

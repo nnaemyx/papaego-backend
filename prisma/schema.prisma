@@ -216,6 +216,11 @@ model TradeRequest {
   payoutAmount Decimal?
   quotedAt     DateTime?
 
+  // Negotiation fields (Sprint 2)
+  negotiationUsed  Boolean   @default(false)
+  originalFxRate   Decimal?
+  negotiatedRate   Decimal?
+
   customer     Customer      @relation(fields: [customerId], references: [id])
   agent        User?         @relation("AgentTradeRequests", fields: [agentId], references: [id])
   chatMessages ChatMessage[]
