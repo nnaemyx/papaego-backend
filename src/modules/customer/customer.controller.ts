@@ -406,7 +406,7 @@ export async function approveCustomer(req: Request, res: Response) {
                 await sendCustomerVerificationEmail({
                     email,
                     customerName: customerWithUser.fullName,
-                    loginLink: `${frontendUrl}/customer-auth/login`
+                    loginLink: `${frontendUrl}/customer-auth/signin`
                 });
             }
         }

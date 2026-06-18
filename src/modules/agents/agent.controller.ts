@@ -252,7 +252,7 @@ export async function getAgentReferral(req: Request, res: Response) {
             : `REF-${agentId.slice(0, 8).toUpperCase()}`;
 
         const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-        const referralLink = `${frontendUrl}/customer-auth/register?ref=${encodeURIComponent(referralCode)}`;
+        const referralLink = `${frontendUrl}/customer-auth/signup?ref=${encodeURIComponent(referralCode)}`;
 
         // Count customers referred via this code (customers who have this agent's referral code in their User record)
         // Since we don't track referral at customer level yet, we approximate from trades
