@@ -272,9 +272,10 @@ export async function processTradeRequest(req: Request, res: Response) {
             return res.status(400).json({ error: "Request already processed" });
         }
 
-        // Process the trade without requiring an agent (Admins handle this now)
+        // Process the trade with agent attribution: use referring agent if available
         const adminUser = await prisma.user.findFirst({ where: { role: "ADMIN" } });
-        const agentId = request.agentId || adminUser?.id;
+        const referringAgentId = request.customer?.referringAgentId;
+        const agentId = request.agentId || referringAgentId || adminUser?.id;
 
         // Resolve countryId (optional — Trade.countryId is now nullable)
         const firstCountry = await prisma.country.findFirst();
@@ -369,7 +370,7 @@ export async function getAdminTradeRequest(req: Request, res: Response) {
             where: { id },
             include: {
                 customer: {
-                    select: { id: true, fullName: true, email: true, phone: true },
+                    select: { id: true, fullName: true, email: true, phone: true, referringAgentId: true },
                 },
                 agent: {
                     select: { id: true, firstName: true, lastName: true, email: true },
@@ -397,6 +398,17 @@ export async function getAdminTradeRequest(req: Request, res: Response) {
                 agent: { select: { id: true, firstName: true, lastName: true } },
             },
         });
+
+        let resolvedLinkedTradeAgent = linkedTrade?.agent || null;
+        if (linkedTrade && request?.customer?.referringAgentId) {
+            const referringAgentUser = await prisma.user.findUnique({
+                where: { id: request.customer.referringAgentId },
+                select: { id: true, firstName: true, lastName: true }
+            });
+            if (referringAgentUser) {
+                resolvedLinkedTradeAgent = referringAgentUser;
+            }
+        }
 
         res.json({
             id: request.id,
@@ -448,7 +460,7 @@ export async function getAdminTradeRequest(req: Request, res: Response) {
                     paymentAccountNumber: (linkedTrade as any).paymentAccountNumber,
                     paymentAccountName: (linkedTrade as any).paymentAccountName,
                     createdAt: linkedTrade.createdAt,
-                    agent: linkedTrade.agent,
+                    agent: resolvedLinkedTradeAgent,
                 }
                 : null,
         });

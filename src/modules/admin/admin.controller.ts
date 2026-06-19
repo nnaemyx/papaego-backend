@@ -316,20 +316,34 @@ export async function listAllTrades(req: Request, res: Response) {
             prisma.trade.count({ where })
         ]);
 
-        // Fetch agents + customers in bulk to avoid N+1
-        const agentIds = [...new Set(trades.map(t => t.agentId).filter(Boolean))];
+        // Fetch customer records including referringAgentId to resolve actual agent attribution
         const customerIds = [...new Set(trades.map(t => t.customerId).filter(Boolean))];
 
-        const [agentUsers, customerRecords] = await Promise.all([
-            prisma.user.findMany({
-                where: { id: { in: agentIds } },
-                select: { id: true, firstName: true, lastName: true, email: true }
-            }),
-            prisma.customer.findMany({
-                where: { id: { in: customerIds } },
-                select: { id: true, fullName: true, email: true }
-            })
-        ]);
+        const customerRecords = await prisma.customer.findMany({
+            where: { id: { in: customerIds } },
+            select: { id: true, fullName: true, email: true, referringAgentId: true }
+        });
+
+        const customerMap: Record<string, { name: string; referringAgentId: string | null }> = {};
+        const referringAgentIds: string[] = [];
+        customerRecords.forEach(c => {
+            customerMap[c.id] = {
+                name: c.fullName || c.email || 'Customer',
+                referringAgentId: c.referringAgentId
+            };
+            if (c.referringAgentId) {
+                referringAgentIds.push(c.referringAgentId);
+            }
+        });
+
+        // Collect all potential agent IDs (executing agentId + customer referringAgentId)
+        const executingAgentIds = trades.map(t => t.agentId).filter(Boolean);
+        const allAgentIds = [...new Set([...executingAgentIds, ...referringAgentIds])];
+
+        const agentUsers = await prisma.user.findMany({
+            where: { id: { in: allAgentIds } },
+            select: { id: true, firstName: true, lastName: true, email: true }
+        });
 
         const agentMap: Record<string, string> = {};
         agentUsers.forEach(u => {
@@ -338,14 +352,15 @@ export async function listAllTrades(req: Request, res: Response) {
                 : u.email?.split('@')[0] || 'Agent';
         });
 
-        const customerMap: Record<string, string> = {};
-        customerRecords.forEach(c => {
-            customerMap[c.id] = c.fullName || c.email || 'Customer';
-        });
-
         const formatted = trades.map(trade => {
-            const agentName = agentMap[trade.agentId] || 'N/A';
-            const customerName = customerMap[trade.customerId] || 'N/A';
+            const customerData = customerMap[trade.customerId];
+            const customerName = customerData?.name || 'N/A';
+            
+            // Resolve the actual agent to display: referring agent, falling back to executing agent
+            const resolvedAgentId = customerData?.referringAgentId || trade.agentId;
+            const agentName = agentMap[resolvedAgentId] || 'N/A';
+            const agentIdDisplay = resolvedAgentId ? `#PE-${resolvedAgentId.slice(0, 5).toUpperCase()}` : '—';
+            
             const dateObj = new Date(trade.createdAt);
 
             const statusMap: Record<string, string> = {
@@ -364,7 +379,7 @@ export async function listAllTrades(req: Request, res: Response) {
                 time: dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
                 customer: customerName,
                 agent: agentName,
-                agentId: trade.agentId ? `#PE-${trade.agentId.slice(0, 5).toUpperCase()}` : '—',
+                agentId: agentIdDisplay,
                 transaction: `${trade.sendCurrency} → ${trade.receiveCurrency}`,
                 amount: `₦${Number(trade.amount).toLocaleString()}`,
                 status: statusMap[trade.status] || trade.status,
@@ -517,15 +532,18 @@ export async function getAdminTransaction(req: Request, res: Response) {
             return res.status(404).json({ error: "Transaction not found" });
         }
 
-        // Fetch Agent Info
-        const agent = await prisma.user.findUnique({
-            where: { id: trade.agentId },
-            select: { id: true, firstName: true, lastName: true, email: true, phone: true }
-        });
-
         // Fetch Customer Info
         const customer = await prisma.customer.findUnique({
             where: { id: trade.customerId }
+        });
+
+        // Resolve referring agent if available, otherwise executing agent
+        const resolvedAgentId = customer?.referringAgentId || trade.agentId;
+
+        // Fetch Agent Info
+        const agent = await prisma.user.findUnique({
+            where: { id: resolvedAgentId },
+            select: { id: true, firstName: true, lastName: true, email: true, phone: true }
         });
 
         res.json({
