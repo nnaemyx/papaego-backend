@@ -13,8 +13,25 @@ export async function triggerTradeCommission(tradeId: string) {
             return;
         }
 
-        if (!trade.agentId) {
-            // Self-service trade, no agent commission
+        // Resolve agent to credit: prioritize customer's referring agent, fallback to trade's executing agent
+        const customer = await prisma.customer.findUnique({
+            where: { id: trade.customerId },
+            select: { referringAgentId: true }
+        });
+
+        const targetAgentId = customer?.referringAgentId || trade.agentId;
+        if (!targetAgentId) {
+            return;
+        }
+
+        // Verify that targetAgentId is actually an AGENT, not an ADMIN or other role
+        const agentUser = await prisma.user.findUnique({
+            where: { id: targetAgentId },
+            select: { role: true }
+        });
+
+        if (!agentUser || agentUser.role !== "AGENT") {
+            // Do not generate commission for admin/compliance
             return;
         }
 
@@ -37,7 +54,7 @@ export async function triggerTradeCommission(tradeId: string) {
         const commission = await prisma.commission.create({
             data: {
                 reference,
-                agentId: trade.agentId,
+                agentId: targetAgentId,
                 tradeId: trade.id,
                 type: "TRANSACTION",
                 amount: commissionAmount,

@@ -5,6 +5,7 @@ import { assertRateNotExpired, computeLockedUntil, rateExpiresInSeconds, RateExp
 import { getLockedRate } from "../fx/fx.service";
 import { randomUUID } from "node:crypto";
 import { sendSupplierConfirmedEmail, sendTradeCompletionEmail, sendTradeCancelledEmail } from "../../services/email.service";
+import { triggerTradeCommission } from "../commission/commission.service";
 
 export async function createTrade(req: Request, res: Response) {
     try {
@@ -290,6 +291,9 @@ export async function confirmPayout(req: Request, res: Response) {
             where: { id: trade.id },
             data: { status: "COMPLETED" }
         });
+
+        // Trigger agent commission generation
+        await triggerTradeCommission(trade.id);
 
         // Notify Customer and Admins
         const admins = await prisma.user.findMany({ where: { role: 'ADMIN' }, select: { id: true, email: true } });

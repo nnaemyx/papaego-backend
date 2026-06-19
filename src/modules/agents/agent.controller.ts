@@ -9,12 +9,17 @@ export async function getDashboardStats(req: Request, res: Response) {
     try {
         const agentId = (req as any).user.id;
 
-        // Get all trades for this agent
+        // Get all trades for this agent (either handled by agent or performed by referred customers)
         const trades = await prisma.trade.findMany({
-            where: { agentId }
+            where: {
+                OR: [
+                    { agentId },
+                    { customer: { referringAgentId: agentId } }
+                ]
+            }
         });
 
-        // Calculate stats
+        // Calculate trade stats
         const activeTrades = trades.filter(t =>
             !['COMPLETED', 'CANCELLED', 'EXPIRED'].includes(t.status)
         ).length;
@@ -40,10 +45,46 @@ export async function getDashboardStats(req: Request, res: Response) {
             .filter(c => new Date(c.createdAt) >= thisMonthStart)
             .reduce((sum, c) => sum + Number(c.amount), 0);
 
-        // Get actual pending documents count (unverified customers on agent platform)
+        // Get pending documents count
         const pendingDocuments = await prisma.customer.count({
             where: { verified: false }
         });
+
+        // --- Customer engagement stats ---
+        // Customers referred by this agent via referral link
+        const referredCustomerIds = await prisma.customer.findMany({
+            where: { referringAgentId: agentId },
+            select: { id: true },
+        }).then(rows => rows.map(r => r.id));
+
+        // Customers who have traded with this agent
+        const tradeCustomerIds = await prisma.trade.findMany({
+            where: { agentId },
+            select: { customerId: true },
+            distinct: ["customerId"],
+        }).then(rows => rows.map(r => r.customerId));
+
+        const allCustomerIds = [...new Set([...referredCustomerIds, ...tradeCustomerIds])];
+        const totalCustomers = allCustomerIds.length;
+        const referredCustomers = referredCustomerIds.length;
+
+        // Active customers = those who traded with this agent in the last 30 days
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const activeCustomerIds = await prisma.trade.findMany({
+            where: {
+                OR: [
+                    { agentId },
+                    { customer: { referringAgentId: agentId } }
+                ],
+                createdAt: { gte: thirtyDaysAgo },
+            },
+            select: { customerId: true },
+            distinct: ["customerId"],
+        }).then(rows => rows.map(r => r.customerId));
+
+        const activeCustomers = activeCustomerIds.length;
 
         res.json({
             activeTrades,
@@ -51,7 +92,10 @@ export async function getDashboardStats(req: Request, res: Response) {
             totalCommissions: `₦${totalCommissions.toLocaleString()}`,
             monthlyCommissions: `₦${monthlyCommissions.toLocaleString()}`,
             pendingDocuments,
-            totalTrades: trades.length
+            totalTrades: trades.length,
+            totalCustomers,
+            activeCustomers,
+            referredCustomers,
         });
     } catch (error) {
         console.error("Error fetching agent dashboard stats:", error);
@@ -71,7 +115,12 @@ export async function getAgentTrades(req: Request, res: Response) {
         const take = parseInt(limit as string, 10);
         const skip = (parseInt(page as string, 10) - 1) * take;
 
-        const where: any = { agentId };
+        const where: any = {
+            OR: [
+                { agentId },
+                { customer: { referringAgentId: agentId } }
+            ]
+        };
         if (status && status !== 'All') {
             where.status = (status as string).toUpperCase();
         }
@@ -150,7 +199,10 @@ export async function getAgentTrade(req: Request, res: Response) {
         const trade = await prisma.trade.findFirst({
             where: {
                 id,
-                agentId // Ensure agent can only access their own trades
+                OR: [
+                    { agentId },
+                    { customer: { referringAgentId: agentId } }
+                ]
             }
         });
 
@@ -254,28 +306,78 @@ export async function getAgentReferral(req: Request, res: Response) {
         const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
         const referralLink = `${frontendUrl}/customer-auth/signup?ref=${encodeURIComponent(referralCode)}`;
 
-        // Count customers referred via this code (customers who have this agent's referral code in their User record)
-        // Since we don't track referral at customer level yet, we approximate from trades
-        const customerIds = await prisma.trade.findMany({
-            where: { agentId },
-            select: { customerId: true },
-            distinct: ["customerId"]
+        // Fetch actual referred customers from DB
+        const referredCustomers = await prisma.customer.findMany({
+            where: { referringAgentId: agentId },
+            orderBy: { createdAt: "desc" }
         });
 
-        const totalReferred = customerIds.length;
+        const totalReferred = referredCustomers.length;
 
-        // Commission earned from trades
+        // Commission earned from referred customer trades
         const commissions = await prisma.commission.findMany({
-            where: { agentId, type: "REFERRAL" },
+            where: {
+                agentId,
+                trade: {
+                    customer: { referringAgentId: agentId }
+                }
+            }
         });
-        const commissionFromReferrals = commissions.reduce((sum, c) => sum + Number(c.amount), 0);
+        const commissionFromReferralsSum = commissions.reduce((sum, c) => sum + Number(c.amount), 0);
+
+        const formattedCustomers = [];
+        for (const customer of referredCustomers) {
+            // Find all trades for this customer
+            const trades = await prisma.trade.findMany({
+                where: { customerId: customer.id }
+            });
+            const totalTrades = trades.length;
+
+            // Total volume: sum of trade amounts
+            const volume = trades.reduce((sum, t) => sum + Number(t.amount), 0);
+            const totalVolume = `₦${volume.toLocaleString()}`;
+
+            // Commission earned from this customer
+            const customerCommissions = await prisma.commission.findMany({
+                where: {
+                    agentId,
+                    trade: { customerId: customer.id }
+                }
+            });
+            const commissionSum = customerCommissions.reduce((sum, c) => sum + Number(c.amount), 0);
+            const commissionEarned = `₦${commissionSum.toLocaleString()}`;
+
+            // Get last trade date
+            const lastTradeDate = trades.length > 0 
+                ? trades.reduce((max, t) => t.createdAt > max ? t.createdAt : max, trades[0].createdAt)
+                : null;
+
+            // Activity status
+            let status = "Dormant";
+            if (lastTradeDate) {
+                const days = Math.floor((Date.now() - lastTradeDate.getTime()) / (1000 * 60 * 60 * 24));
+                if (days <= 30) status = "Active";
+                else if (days <= 90) status = "Inactive";
+            }
+
+            formattedCustomers.push({
+                id: customer.id,
+                name: customer.fullName,
+                email: customer.email || "N/A",
+                joinedDate: customer.createdAt.toISOString(),
+                totalTrades,
+                totalVolume,
+                commissionEarned,
+                status
+            });
+        }
 
         res.json({
             referralCode,
             referralLink,
             totalReferred,
-            commissionFromReferrals: `₦${commissionFromReferrals.toLocaleString()}`,
-            referredCustomers: [],
+            commissionFromReferrals: `₦${commissionFromReferralsSum.toLocaleString()}`,
+            referredCustomers: formattedCustomers,
         });
     } catch (error) {
         console.error("Error fetching agent referral info:", error);

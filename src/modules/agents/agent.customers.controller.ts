@@ -129,7 +129,10 @@ export async function getAgentCustomers(req: Request, res: Response) {
             _max: { createdAt: true },
             where: {
                 customerId: { in: customerIds },
-                agentId, // Only count trades with THIS agent
+                OR: [
+                    { agentId },
+                    { customer: { referringAgentId: agentId } }
+                ]
             },
         });
 
@@ -206,14 +209,26 @@ export async function getAgentCustomer(req: Request, res: Response) {
         });
         if (!customer) return res.status(404).json({ error: "Customer not found" });
 
-        // Only count trades with this agent
+        // Only count trades under agent's purview
         const tradesCount = await prisma.trade.count({
-            where: { customerId: id, agentId },
+            where: {
+                customerId: id,
+                OR: [
+                    { agentId },
+                    { customer: { referringAgentId: agentId } }
+                ]
+            },
         });
 
         // Get last trade date
         const lastTrade = await prisma.trade.findFirst({
-            where: { customerId: id, agentId },
+            where: {
+                customerId: id,
+                OR: [
+                    { agentId },
+                    { customer: { referringAgentId: agentId } }
+                ]
+            },
             orderBy: { createdAt: "desc" },
             select: { createdAt: true },
         });
@@ -222,7 +237,13 @@ export async function getAgentCustomer(req: Request, res: Response) {
 
         // Get recent trades — count only, no amounts
         const recentTrades = await prisma.trade.findMany({
-            where: { customerId: customer.id, agentId },
+            where: {
+                customerId: customer.id,
+                OR: [
+                    { agentId },
+                    { customer: { referringAgentId: agentId } }
+                ]
+            },
             take: 5,
             orderBy: { createdAt: "desc" },
             select: {
@@ -231,7 +252,7 @@ export async function getAgentCustomer(req: Request, res: Response) {
                 sendCurrency: true,
                 receiveCurrency: true,
                 createdAt: true,
-                // Deliberately excluding: amount, fxRate, payoutAmount
+                amount: true,
             },
         });
 
@@ -287,10 +308,21 @@ export async function getAgentCustomerStats(req: Request, res: Response) {
 
         const allCustomerIds = [...new Set([...referredCustomerIds, ...tradeCustomerIds])];
 
-        const [totalCustomers, verifiedCustomers] = await Promise.all([
+        const [totalCustomers, verifiedCustomers, totalTrades] = await Promise.all([
             prisma.customer.count({ where: { id: { in: allCustomerIds } } }),
             prisma.customer.count({ where: { id: { in: allCustomerIds }, verified: true } }),
+            prisma.trade.count({
+                where: {
+                    OR: [
+                        { agentId },
+                        { customer: { referringAgentId: agentId } }
+                    ]
+                }
+            }),
         ]);
+
+        // Referred customers = customers who were signed up via this agent's referral link
+        const referredCustomers = referredCustomerIds.length;
 
         // Active today: customers with trades today
         const today = new Date();
@@ -299,7 +331,10 @@ export async function getAgentCustomerStats(req: Request, res: Response) {
         const activeTodayCount = await prisma.trade.groupBy({
             by: ["customerId"],
             where: {
-                agentId,
+                OR: [
+                    { agentId },
+                    { customer: { referringAgentId: agentId } }
+                ],
                 createdAt: { gte: today },
             },
         }).then(rows => rows.length);
@@ -310,7 +345,10 @@ export async function getAgentCustomerStats(req: Request, res: Response) {
             _max: { createdAt: true },
             where: {
                 customerId: { in: allCustomerIds },
-                agentId,
+                OR: [
+                    { agentId },
+                    { customer: { referringAgentId: agentId } }
+                ]
             },
         });
 
@@ -333,7 +371,14 @@ export async function getAgentCustomerStats(req: Request, res: Response) {
         res.json({
             totalCustomers,
             verifiedCustomers,
+            totalTrades,
+            referredCustomers,
             activeCustomersToday: activeTodayCount,
+            // Flat fields — consumed directly by frontend stat cards
+            activeCustomers: activeCount,
+            inactiveCustomers: inactiveCount,
+            dormantCustomers: dormantCount,
+            // Nested breakdown — for widgets/charts
             activityBreakdown: {
                 active: activeCount,
                 inactive: inactiveCount,
@@ -345,3 +390,4 @@ export async function getAgentCustomerStats(req: Request, res: Response) {
         res.status(500).json({ error: "Failed to fetch stats" });
     }
 }
+
