@@ -105,7 +105,7 @@ export async function checkAndRefreshTradeRequestExpiry(tradeRequest: any): Prom
     }
     return tradeRequest;
 }
-import { customerSignup, uploadCustomerDocument } from "./customer.signup.controller";
+import { customerSignup, uploadCustomerDocument, initiateSignup, verifySignupOtp, resendSignupOtp, submitSignupKyc } from "./customer.signup.controller";
 import { createTradeRequest, getCustomerTradeRequests, getTradeRequestById, updateCustomerTradeRequest, cancelCustomerTradeRequest } from "./customer.request.controller";
 import { upsertBankDetails, getBankDetails } from "./customer.bank.controller";
 import { createNotification } from "../notifications/notification.service";
@@ -134,6 +134,9 @@ const router = Router();
 
 // --- Public: Customer signup ---
 router.post("/signup", customerSignup);
+router.post("/signup/initiate", initiateSignup);
+router.post("/signup/verify", verifySignupOtp);
+router.post("/signup/resend", resendSignupOtp);
 router.post("/signup/upload", uploadToCloudinary.single("file"), uploadCustomerDocument);
 
 // --- Auth required from here ---
@@ -155,6 +158,8 @@ const populateCustomer = async (req: Request, res: Response, next: any) => {
 };
 
 router.use(populateCustomer);
+
+router.post("/signup/submit-kyc", submitSignupKyc);
 
 /**
  * GET /customer/portal/me
