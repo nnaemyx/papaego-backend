@@ -18,6 +18,7 @@ import chatRoutes from "./chat/chat.routes";
 import uploadRoutes from "./uploads/upload.routes";
 import supplierRoutes from "./suppliers/supplier.routes";
 import marketRoutes from "./market/market.routes";
+import agentApplicationRoutes from "./agent-applications/agent-application.routes";
 
 const router = Router();
 
@@ -33,6 +34,8 @@ router.use("/admin/customers", adminCustomerRoutes);
 router.use("/admin/commissions", adminCommissionRoutes);
 router.use("/admin/audit-logs", adminAuditRoutes);
 router.use("/admin/market", marketRoutes);
+router.use("/admin/agent-applications", agentApplicationRoutes); // Admin view
+router.use("/agent-applications", agentApplicationRoutes); // Public submission
 router.use("/compliance", complianceRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/fx", fxRoutes);
@@ -42,3 +45,4 @@ router.use("/upload", uploadRoutes);
 router.use("/suppliers", supplierRoutes);
 
 export default router;
+
