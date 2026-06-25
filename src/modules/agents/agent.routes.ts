@@ -37,6 +37,7 @@ import {
     setTradeRequestRate
 } from "./agent.request.controller";
 import { getAgentReferralLink, getAgentReferrals } from "./referral.controller";
+import { requestCashout, getAgentCashoutStatus } from "./agent.cashout.controller";
 
 const router = Router();
 
@@ -46,6 +47,10 @@ router.use(requireRole("AGENT"));
 // Dashboard
 router.get("/dashboard/stats", getDashboardStats);
 router.get("/commissions", getAgentCommissions);
+
+// Cashout Requests
+router.post("/cashout/request", requestCashout);
+router.get("/cashout/status", getAgentCashoutStatus);
 
 // Profile
 import { getAgentProfile, updateAgentProfile, updateAgentPassword, uploadProfileAvatar } from "./agent.profile.controller";
