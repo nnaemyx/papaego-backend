@@ -949,3 +949,59 @@ export async function sendRateQuotedEmail({
     return { success: false };
   }
 }
+
+interface SendOtpParams {
+  email: string;
+  userName: string;
+  otp: string;
+}
+
+export async function sendOtpEmail({ email, userName, otp }: SendOtpParams) {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: 'PapaEgo Verification <verify@papaego.com>',
+      to: email,
+      subject: "Verify Your PapaEgo Account",
+      text: `
+Hello ${userName},
+
+Your One-Time Password (OTP) for PapaEgo account verification is: ${otp}
+
+This OTP is valid for 5 minutes. Please do not share this code with anyone.
+
+© ${new Date().getFullYear()} PapaEgo. All rights reserved.
+      `,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f6f9fc; margin: 0; padding: 20px;">
+            <div style="background-color: #ffffff; max-width: 600px; margin: 0 auto; padding: 32px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); border: 1px solid #e6ebf1;">
+              <h2 style="color: #012333; margin-top: 0; margin-bottom: 24px; font-size: 24px; border-bottom: 2px solid #f0e7c8; padding-bottom: 12px;">Verify Your Account</h2>
+              <p style="color: #333333; font-size: 16px; line-height: 1.5;">Hello ${userName},</p>
+              <p style="color: #333333; font-size: 16px; line-height: 1.5;">Thank you for registering on PapaEgo. To complete your sign-up, please verify your email address using the One-Time Password (OTP) below:</p>
+              
+              <div style="text-align: center; margin: 32px 0;">
+                <span style="font-family: 'Courier New', Courier, monospace; font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #c9a227; background-color: #fdfaf0; border: 1.5px dashed #c9a227; padding: 12px 32px; border-radius: 8px; display: inline-block;">
+                  ${otp}
+                </span>
+              </div>
+              
+              <p style="color: #ef4444; font-size: 14px; font-weight: 500;">This OTP will expire in 5 minutes.</p>
+              <p style="color: #666666; font-size: 14px; line-height: 1.5;">If you did not request this verification, you can safely ignore this email.</p>
+              
+              <hr style="border: 0; border-top: 1px solid #e6ebf1; margin: 32px 0;" />
+              <p style="color: #8898aa; font-size: 12px;">© ${new Date().getFullYear()} PapaEgo. All rights reserved.</p>
+            </div>
+          </body>
+        </html>
+      `
+    });
+    if (error) throw error;
+    console.log(`✅ OTP email sent successfully to ${email}`);
+    return { success: true, messageId: data?.id };
+  } catch (error) {
+    console.error("❌ Error sending OTP email:", error);
+    return { success: false };
+  }
+}
+

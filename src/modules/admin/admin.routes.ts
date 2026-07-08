@@ -68,6 +68,7 @@ import {
     getTurnoverStats,
     updateTurnoverConfig,
 } from "../negotiation/negotiation.controller";
+import { listAllCashouts, updateCashoutStatus } from "../agents/agent.cashout.controller";
 
 const router = Router();
 
@@ -133,6 +134,10 @@ router.delete("/fx-rates/:pair", deleteFxRate);
 router.get("/fx-margins", getFxMargin);
 router.post("/fx-margins", setFxMargin);
 router.post("/overrides/:id/approve", approveOverride);
+
+// ── Cashouts ──────────────────────────────────────────────────────────────────
+router.get("/cashouts", listAllCashouts);
+router.patch("/cashouts/:id/status", updateCashoutStatus);
 
 // ── Reports ───────────────────────────────────────────────────────────────────
 router.get("/reports/productivity", getProductivityReport);

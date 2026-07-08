@@ -89,6 +89,7 @@ model User {
   agentTrades        Trade[]            @relation("AgentTrades")
   agentTradeRequests TradeRequest[]     @relation("AgentTradeRequests")
   agentRatings       AgentRating[]      @relation("AgentRatings")
+  cashoutRequests    CashoutRequest[]
 }
 
 model Notification {
@@ -671,8 +672,8 @@ model TreasuryAccount {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
-  balances  TreasuryBalance[]
-  syncLogs  BalanceSyncLog[]
+  balances      TreasuryBalance[]
+  syncLogs      BalanceSyncLog[]
   debitEntries  LedgerEntry[] @relation("DebitAccount")
   creditEntries LedgerEntry[] @relation("CreditAccount")
 
@@ -722,15 +723,15 @@ model LedgerEntry {
 
 // Sync history per provider/account
 model BalanceSyncLog {
-  id            String            @id @default(uuid())
-  provider      String
-  accountId     String
-  currency      String
-  syncedBalance Decimal?
+  id              String            @id @default(uuid())
+  provider        String
+  accountId       String
+  currency        String
+  syncedBalance   Decimal?
   previousBalance Decimal?
-  status        BalanceSyncStatus
-  errorMessage  String?
-  syncedAt      DateTime          @default(now())
+  status          BalanceSyncStatus
+  errorMessage    String?
+  syncedAt        DateTime          @default(now())
 
   account TreasuryAccount @relation(fields: [accountId], references: [id])
 
@@ -786,4 +787,39 @@ model ExchangeRateLog {
 
   @@index([baseCurrency, quoteCurrency])
   @@index([createdAt])
+}
+
+// ---------- VERIFICATION & CASHOUT (from remote) ----------
+
+model VerificationOtp {
+  id             String    @id @default(uuid())
+  email          String    @unique
+  otp            String
+  attempts       Int       @default(0)
+  resendAttempts Int       @default(0)
+  expiresAt      DateTime
+  lastSentAt     DateTime  @default(now())
+  lockedUntil    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+enum CashoutStatus {
+  PENDING
+  APPROVED
+  PAID
+  REJECTED
+}
+
+model CashoutRequest {
+  id        String        @id @default(uuid())
+  agentId   String
+  agentName String
+  amount    Decimal
+  status    CashoutStatus @default(PENDING)
+  notes     String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  agent User @relation(fields: [agentId], references: [id])
 }
