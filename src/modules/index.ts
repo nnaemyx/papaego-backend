@@ -19,6 +19,8 @@ import uploadRoutes from "./uploads/upload.routes";
 import supplierRoutes from "./suppliers/supplier.routes";
 import marketRoutes from "./market/market.routes";
 import agentApplicationRoutes from "./agent-applications/agent-application.routes";
+import treasuryRoutes from "./treasury/treasury.routes";
+import exchangeRateRoutes from "./exchange-rate/exchange-rate.routes";
 
 const router = Router();
 
@@ -43,6 +45,9 @@ router.use("/bank", bankRoutes);
 router.use("/chat", chatRoutes);
 router.use("/upload", uploadRoutes);
 router.use("/suppliers", supplierRoutes);
+router.use("/treasury", treasuryRoutes);
+router.use("/ledger", treasuryRoutes); // Alias for /ledger/entries
+router.use("/exchange-rate", exchangeRateRoutes);
 
 export default router;
 

@@ -622,3 +622,168 @@ model AgentApplication {
   @@index([status])
   @@index([email])
 }
+
+// ---------- SPRINT 1: TREASURY LEDGER ----------
+
+enum AccountType {
+  BANK
+  WALLET
+  EXCHANGE
+  LIQUIDITY_PROVIDER
+}
+
+enum AccountStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum BalanceSyncStatus {
+  SUCCESS
+  FAILED
+  PARTIAL
+}
+
+enum LedgerEntryType {
+  DEPOSIT
+  WITHDRAWAL
+  RESERVATION
+  RELEASE
+  SETTLEMENT
+  FEE
+  SYNC_ADJUSTMENT
+}
+
+enum MarkupType {
+  FIXED
+  PERCENTAGE
+}
+
+// Registry of all company accounts (banks, wallets, exchanges)
+model TreasuryAccount {
+  id          String        @id @default(uuid())
+  accountName String
+  provider    String        // e.g. GTBank, Binance, OKX, Coinbase, MetaMask
+  currency    String        // Primary currency of the account
+  accountType AccountType
+  status      AccountStatus @default(ACTIVE)
+  metadata    Json?         // Additional provider-specific metadata (account number, address, etc.)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  balances  TreasuryBalance[]
+  syncLogs  BalanceSyncLog[]
+  debitEntries  LedgerEntry[] @relation("DebitAccount")
+  creditEntries LedgerEntry[] @relation("CreditAccount")
+
+  @@index([currency])
+  @@index([accountType])
+  @@index([status])
+}
+
+// Per-account, per-currency balance snapshot
+model TreasuryBalance {
+  id               String   @id @default(uuid())
+  accountId        String
+  currency         String
+  availableBalance Decimal  @default(0)
+  reservedBalance  Decimal  @default(0)
+  totalBalance     Decimal  @default(0)
+  lastUpdated      DateTime @updatedAt
+
+  account TreasuryAccount @relation(fields: [accountId], references: [id])
+
+  @@unique([accountId, currency])
+  @@index([currency])
+}
+
+// Immutable double-entry ledger record — never updated, never deleted
+model LedgerEntry {
+  id              String          @id @default(uuid())
+  reference       String          @unique @default(uuid())
+  transactionType LedgerEntryType
+  debitAccountId  String?         // Account being debited (funds leave)
+  creditAccountId String?         // Account being credited (funds arrive)
+  amount          Decimal
+  currency        String
+  description     String
+  metadata        Json?           // Extra context: trade ID, customer ID, sync ID, etc.
+  createdAt       DateTime        @default(now())
+
+  debitAccount  TreasuryAccount? @relation("DebitAccount", fields: [debitAccountId], references: [id])
+  creditAccount TreasuryAccount? @relation("CreditAccount", fields: [creditAccountId], references: [id])
+
+  @@index([currency])
+  @@index([transactionType])
+  @@index([createdAt])
+  @@index([debitAccountId])
+  @@index([creditAccountId])
+}
+
+// Sync history per provider/account
+model BalanceSyncLog {
+  id            String            @id @default(uuid())
+  provider      String
+  accountId     String
+  currency      String
+  syncedBalance Decimal?
+  previousBalance Decimal?
+  status        BalanceSyncStatus
+  errorMessage  String?
+  syncedAt      DateTime          @default(now())
+
+  account TreasuryAccount @relation(fields: [accountId], references: [id])
+
+  @@index([accountId])
+  @@index([provider])
+  @@index([syncedAt])
+}
+
+// ---------- SPRINT 1: EXCHANGE RATE MANAGEMENT ----------
+
+// Raw provider rates — append-only, never modified
+model ExchangeRateProvider {
+  id            String   @id @default(uuid())
+  providerName  String   // e.g. Binance, OKX, exchangerate.host, Manual
+  baseCurrency  String
+  quoteCurrency String
+  providerRate  Decimal
+  fetchedAt     DateTime @default(now())
+
+  @@index([baseCurrency, quoteCurrency])
+  @@index([providerName])
+  @@index([fetchedAt])
+}
+
+// Configurable markup rules — one active rule per currency pair
+model ExchangeRateMarkup {
+  id            String     @id @default(uuid())
+  baseCurrency  String
+  quoteCurrency String
+  markupType    MarkupType @default(FIXED)
+  markupValue   Decimal    @default(0)
+  isActive      Boolean    @default(true)
+  updatedBy     String?    // Admin user ID who last changed this
+  updatedAt     DateTime   @updatedAt
+  createdAt     DateTime   @default(now())
+
+  @@unique([baseCurrency, quoteCurrency])
+  @@index([isActive])
+}
+
+// Full audit trail of every quote generated
+model ExchangeRateLog {
+  id            String   @id @default(uuid())
+  providerName  String
+  baseCurrency  String
+  quoteCurrency String
+  providerRate  Decimal
+  markupType    String
+  markupApplied Decimal
+  customerRate  Decimal
+  requestedBy   String?  // User ID or service name that requested the quote
+  createdAt     DateTime @default(now())
+
+  @@index([baseCurrency, quoteCurrency])
+  @@index([createdAt])
+}
