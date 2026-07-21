@@ -3,10 +3,21 @@ import path from "path";
 import crypto from "crypto";
 import { cloudinaryUpload as cloudinaryStorage } from "../services/cloudinary.service";
 
+import fs from "fs";
+
+// Ensure local uploads directory exists
+const uploadsDir = path.join(__dirname, "../../uploads");
+if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
 // Define storage location and filename for LOCAL fallback
 const localStorage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, path.join(__dirname, "../../uploads"));
+        if (!fs.existsSync(uploadsDir)) {
+            fs.mkdirSync(uploadsDir, { recursive: true });
+        }
+        cb(null, uploadsDir);
     },
     filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + "-" + crypto.randomBytes(4).toString('hex');
@@ -39,17 +50,14 @@ export const upload = multer({
     fileFilter
 });
 
-// Cloudinary specific middleware - Enforce Cloudinary usage
 const hasCloudinaryKeys = 
     process.env.CLOUDINARY_CLOUD_NAME && 
     process.env.CLOUDINARY_API_KEY && 
     process.env.CLOUDINARY_API_SECRET;
 
-if (!hasCloudinaryKeys) {
-    console.error("❌ CRITICAL: Cloudinary credentials missing in .env. Uploads will FAIL.");
-}
+export const uploadToCloudinary = hasCloudinaryKeys ? cloudinaryStorage : upload;
 
-// ALWAYS use Cloudinary storage. If keys are missing, multer will likely throw an error on configuration
-// which is better than silently falling back to local storage when the user wants Cloudinary only.
-export const uploadToCloudinary = cloudinaryStorage;
+// Alias used by compliance document upload routes (uses Cloudinary if keys present, disk otherwise)
+export const uploadMiddleware = hasCloudinaryKeys ? cloudinaryStorage : upload;
+
 

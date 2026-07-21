@@ -12,7 +12,9 @@ export const signupSchema = z.object({
         email: z.string().email(),
         password: passwordSchema,
         phone: z.string().min(10).optional(),
-        role: z.enum(["AGENT", "CUSTOMER", "COMPLIANCE", "ADMIN"]).optional()
+        firstName: z.string().min(1).optional(),
+        lastName: z.string().min(1).optional(),
+        role: z.enum(["AGENT", "CUSTOMER", "COMPLIANCE", "ADMIN", "ORG_OWNER", "ORG_ADMIN"]).optional()
     })
 });
 
@@ -35,3 +37,17 @@ export const resetPasswordSchema = z.object({
         password: passwordSchema
     })
 });
+
+export const verifyEmailSchema = z.object({
+    body: z.object({
+        email: z.string().email(),
+        otp: z.string().length(6, "OTP must be 6 digits")
+    })
+});
+
+export const resendOtpSchema = z.object({
+    body: z.object({
+        email: z.string().email()
+    })
+});
+

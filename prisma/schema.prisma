@@ -14,6 +14,8 @@ enum Role {
   CUSTOMER
   COMPLIANCE
   ADMIN
+  ORG_OWNER
+  ORG_ADMIN
 }
 
 enum TradeStatus {
@@ -65,6 +67,60 @@ enum KycStatus {
   RESUBMITTED
 }
 
+// ---------- SPRINT 1: ONBOARDING & COMPLIANCE ENUMS ----------
+
+enum OrganizationStatus {
+  DRAFT
+  ACTIVE
+  SUSPENDED
+  REJECTED
+}
+
+enum QualificationOutcome {
+  QUALIFIED
+  MANUAL_REVIEW
+  NOT_QUALIFIED
+}
+
+enum VerificationStatus {
+  DRAFT
+  SUBMITTED
+  PROCESSING
+  MANUAL_REVIEW
+  ADDITIONAL_INFO_REQUIRED
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum DocumentType {
+  PASSPORT
+  NATIONAL_ID
+  DRIVERS_LICENSE
+  SELFIE
+  PROOF_OF_ADDRESS
+  CERTIFICATE_OF_INCORPORATION
+  MEMORANDUM_OF_ASSOCIATION
+  ARTICLES_OF_ASSOCIATION
+  TAX_ID_DOCUMENT
+  DIRECTOR_ID
+  UBO_DOCUMENT
+  OTHER
+}
+
+enum WebhookEvent {
+  KYC_APPROVED
+  KYC_REJECTED
+  KYC_PROCESSING
+  KYC_ADDITIONAL_INFO_REQUIRED
+  KYC_EXPIRED
+  KYB_APPROVED
+  KYB_REJECTED
+  KYB_PROCESSING
+  KYB_ADDITIONAL_INFO_REQUIRED
+  KYB_EXPIRED
+}
+
 // ---------- CORE ----------
 
 model User {
@@ -90,6 +146,11 @@ model User {
   agentTradeRequests TradeRequest[]     @relation("AgentTradeRequests")
   agentRatings       AgentRating[]      @relation("AgentRatings")
   cashoutRequests    CashoutRequest[]
+
+  // Sprint 1: Organization relations
+  ownedOrganizations Organization[]       @relation("OrgOwner")
+  orgMemberships     OrganizationMember[] @relation("OrgMembers")
+  kycRequests        KycRequest[]         @relation("KycUser")
 }
 
 model Notification {
@@ -822,4 +883,235 @@ model CashoutRequest {
   updatedAt DateTime      @updatedAt
 
   agent User @relation(fields: [agentId], references: [id])
+}
+
+// ---------- SPRINT 1: ORGANIZATIONS ----------
+
+model Organization {
+  id                     String             @id @default(uuid())
+  ownerId                String
+  businessName           String
+  businessType           String             // LLC, CORPORATION, SOLE_PROPRIETOR, PARTNERSHIP, NGO, OTHER
+  countryOfRegistration  String
+  registrationNumber     String?
+  industry               String
+  businessAddress        String
+  city                   String
+  state                  String?
+  postalCode             String?
+  country                String
+  contactEmail           String
+  contactPhone           String
+  website                String?
+  authorizedRepName      String
+  authorizedRepTitle     String
+  status                 OrganizationStatus @default(DRAFT)
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  owner              User                     @relation("OrgOwner", fields: [ownerId], references: [id])
+  members            OrganizationMember[]
+  qualification      QualificationAssessment?
+  kycRequests        KycRequest[]
+  kybRequest         KybRequest?
+  documents          VerificationDocument[]
+  statusHistory      VerificationStatusHistory[]
+  webhooks           ComplianceWebhook[]
+
+  @@index([ownerId])
+  @@index([status])
+}
+
+model OrganizationMember {
+  id             String   @id @default(uuid())
+  organizationId String
+  userId         String
+  role           String   @default("MEMBER") // OWNER, ADMIN, MEMBER
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation("OrgMembers", fields: [userId], references: [id])
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
+}
+
+// ---------- SPRINT 1: QUALIFICATION ----------
+
+model QualificationAssessment {
+  id                       String              @id @default(uuid())
+  organizationId           String              @unique
+  hasInternationalPayments Boolean
+  expectedMonthlyVolume    Decimal?
+  supplierPaymentFrequency String?             // WEEKLY, MONTHLY, QUARTERLY, AD_HOC
+  countriesOfOperation     String[]            // ISO codes
+  primaryUseCase           String?
+  additionalContext        String?
+  outcome                  QualificationOutcome?
+  reviewNotes              String?
+  reviewedAt               DateTime?
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([outcome])
+}
+
+// ---------- SPRINT 1: KYC ----------
+
+model KycRequest {
+  id                 String           @id @default(uuid())
+  organizationId     String
+  userId             String
+  fvBankApplicationId String?         // ID returned by FV Bank after submission
+  fullName           String
+  dateOfBirth        DateTime
+  nationality        String
+  residentialAddress String
+  phone              String
+  email              String
+  idType             DocumentType
+  status             VerificationStatus @default(DRAFT)
+  rejectionReason    String?
+  additionalInfoNote String?
+  submittedAt        DateTime?
+  reviewedAt         DateTime?
+  expiresAt          DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  organization Organization          @relation(fields: [organizationId], references: [id])
+  user         User                  @relation("KycUser", fields: [userId], references: [id])
+  documents    VerificationDocument[] @relation("KycDocuments")
+  statusHistory VerificationStatusHistory[] @relation("KycHistory")
+
+  @@index([organizationId])
+  @@index([userId])
+  @@index([status])
+  @@index([fvBankApplicationId])
+}
+
+// ---------- SPRINT 1: KYB ----------
+
+model KybRequest {
+  id                   String           @id @default(uuid())
+  organizationId       String           @unique
+  fvBankApplicationId  String?          // ID returned by FV Bank after submission
+  companyName          String
+  registrationNumber   String
+  countryOfIncorporation String
+  businessAddress      String
+  taxIdentification    String?
+  directors            Json?            // Array of { name, role, dob, nationality, idDocUrl }
+  ubos                 Json?            // Array of { name, ownershipPct, nationality, dob }
+  status               VerificationStatus @default(DRAFT)
+  rejectionReason      String?
+  additionalInfoNote   String?
+  submittedAt          DateTime?
+  reviewedAt           DateTime?
+  expiresAt            DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  organization  Organization           @relation(fields: [organizationId], references: [id])
+  documents     VerificationDocument[] @relation("KybDocuments")
+  statusHistory VerificationStatusHistory[] @relation("KybHistory")
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([fvBankApplicationId])
+}
+
+// ---------- SPRINT 1: VERIFICATION DOCUMENTS ----------
+
+model VerificationDocument {
+  id             String       @id @default(uuid())
+  organizationId String
+  kycRequestId   String?
+  kybRequestId   String?
+  documentType   DocumentType
+  fileUrl        String
+  fileName       String
+  fileSize       Int
+  mimeType       String
+  fvBankDocId    String?      // ID returned by FV Bank after document upload
+  uploadedBy     String       // userId
+  createdAt      DateTime     @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  kycRequest   KycRequest?  @relation("KycDocuments", fields: [kycRequestId], references: [id])
+  kybRequest   KybRequest?  @relation("KybDocuments", fields: [kybRequestId], references: [id])
+
+  @@index([organizationId])
+  @@index([kycRequestId])
+  @@index([kybRequestId])
+}
+
+// ---------- SPRINT 1: STATUS HISTORY ----------
+
+model VerificationStatusHistory {
+  id             String             @id @default(uuid())
+  organizationId String
+  kycRequestId   String?
+  kybRequestId   String?
+  entityType     String             // KYC | KYB | ORGANIZATION
+  fromStatus     String?
+  toStatus       String
+  changedBy      String?            // userId or "SYSTEM" or "FV_BANK_WEBHOOK"
+  reason         String?
+  metadata       Json?              // Raw webhook payload or admin notes
+  createdAt      DateTime           @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  kycRequest   KycRequest?  @relation("KycHistory", fields: [kycRequestId], references: [id])
+  kybRequest   KybRequest?  @relation("KybHistory", fields: [kybRequestId], references: [id])
+
+  @@index([organizationId])
+  @@index([kycRequestId])
+  @@index([kybRequestId])
+  @@index([createdAt])
+}
+
+// ---------- SPRINT 1: COMPLIANCE WEBHOOKS ----------
+
+model ComplianceWebhook {
+  id             String       @id @default(uuid())
+  organizationId String?
+  event          WebhookEvent
+  payload        Json
+  signature      String?
+  processed      Boolean      @default(false)
+  processedAt    DateTime?
+  errorMessage   String?
+  retryCount     Int          @default(0)
+  createdAt      DateTime     @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId])
+  @@index([event])
+  @@index([processed])
+  @@index([createdAt])
+}
+
+// ---------- SPRINT 1: NOTIFICATION LOG ----------
+
+model NotificationLog {
+  id           String   @id @default(uuid())
+  recipientId  String   // userId
+  channel      String   // EMAIL | IN_APP | PUSH
+  type         String   // KYC_STATUS_UPDATE | KYB_STATUS_UPDATE | QUALIFICATION_RESULT | etc.
+  subject      String?
+  content      String
+  metadata     Json?
+  sent         Boolean  @default(false)
+  sentAt       DateTime?
+  errorMessage String?
+  createdAt    DateTime @default(now())
+
+  @@index([recipientId])
+  @@index([type])
+  @@index([createdAt])
 }

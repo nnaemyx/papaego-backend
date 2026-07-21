@@ -958,8 +958,11 @@ interface SendOtpParams {
 
 export async function sendOtpEmail({ email, userName, otp }: SendOtpParams) {
   try {
+    const fromAddress = process.env.RESEND_FROM_EMAIL || 'PapaEgo Verification <onboarding@resend.dev>';
+    console.log(`📧 Sending Resend OTP email to ${email}...`);
+
     const { data, error } = await resend.emails.send({
-      from: 'PapaEgo Verification <verify@papaego.com>',
+      from: fromAddress,
       to: email,
       subject: "Verify Your PapaEgo Account",
       text: `
@@ -967,7 +970,7 @@ Hello ${userName},
 
 Your One-Time Password (OTP) for PapaEgo account verification is: ${otp}
 
-This OTP is valid for 5 minutes. Please do not share this code with anyone.
+This OTP is valid for 15 minutes. Please do not share this code with anyone.
 
 © ${new Date().getFullYear()} PapaEgo. All rights reserved.
       `,
@@ -986,7 +989,7 @@ This OTP is valid for 5 minutes. Please do not share this code with anyone.
                 </span>
               </div>
               
-              <p style="color: #ef4444; font-size: 14px; font-weight: 500;">This OTP will expire in 5 minutes.</p>
+              <p style="color: #ef4444; font-size: 14px; font-weight: 500;">This OTP will expire in 15 minutes.</p>
               <p style="color: #666666; font-size: 14px; line-height: 1.5;">If you did not request this verification, you can safely ignore this email.</p>
               
               <hr style="border: 0; border-top: 1px solid #e6ebf1; margin: 32px 0;" />
@@ -996,12 +999,18 @@ This OTP is valid for 5 minutes. Please do not share this code with anyone.
         </html>
       `
     });
-    if (error) throw error;
-    console.log(`✅ OTP email sent successfully to ${email}`);
+
+    if (error) {
+      console.error("❌ Error sending OTP email via Resend:", error.message);
+      return { success: false, error: error.message };
+    }
+
+    console.log(`✅ OTP email sent successfully to ${email}. Resend ID: ${data?.id}`);
     return { success: true, messageId: data?.id };
-  } catch (error) {
-    console.error("❌ Error sending OTP email:", error);
-    return { success: false };
+  } catch (error: any) {
+    console.error("❌ Exception sending OTP email:", error?.message || error);
+    return { success: false, error: error?.message || "Failed to send email" };
   }
 }
+
 

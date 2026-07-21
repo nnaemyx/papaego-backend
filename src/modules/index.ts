@@ -22,6 +22,10 @@ import agentApplicationRoutes from "./agent-applications/agent-application.route
 import treasuryRoutes from "./treasury/treasury.routes";
 import exchangeRateRoutes from "./exchange-rate/exchange-rate.routes";
 
+// Sprint 1: Organization onboarding & compliance
+import organizationRoutes from "./organizations/organization.routes";
+import qualificationRoutes from "./qualification/qualification.routes";
+
 const router = Router();
 
 router.use("/auth", authRoutes);
@@ -48,6 +52,10 @@ router.use("/suppliers", supplierRoutes);
 router.use("/treasury", treasuryRoutes);
 router.use("/ledger", treasuryRoutes); // Alias for /ledger/entries
 router.use("/exchange-rate", exchangeRateRoutes);
+
+// Sprint 1: New onboarding routes
+router.use("/organizations", organizationRoutes);
+router.use("/qualification", qualificationRoutes);
 
 export default router;
 
