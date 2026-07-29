@@ -1,6 +1,18 @@
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let resendInstance: Resend | null = null;
+
+function getResendClient(): Resend {
+  if (!resendInstance) {
+    const apiKey = process.env.RESEND_API_KEY;
+    if (!apiKey) {
+      console.warn("⚠️  RESEND_API_KEY is not defined in process.env!");
+    }
+    resendInstance = new Resend(apiKey || "missing_key");
+  }
+  return resendInstance;
+}
+
 
 
 interface ResetPasswordParams {
@@ -18,7 +30,7 @@ export async function sendResetPasswordEmail({
   resetUrl,
 }: ResetPasswordParams) {
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResendClient().emails.send({
       from: 'PapaEgo <security@papaego.com>',
       to: email,
       subject: "Reset Your PapaEgo Password",
@@ -111,7 +123,7 @@ export async function sendAgentInvitation({
   onboardingLink,
 }: AgentInvitationParams) {
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResendClient().emails.send({
       from: 'PapaEgo <careers@papaego.com>',
       to: email,
       subject: "Welcome to PapaEgo - Complete Your Agent Onboarding",
@@ -206,7 +218,7 @@ export async function sendAgentVerificationEmail({
   loginLink,
 }: AgentVerificationParams) {
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResendClient().emails.send({
       from: 'PapaEgo Registration <verify@papaego.com>',
       to: email,
       subject: "Welcome to PapaEgo - Account Verified!",
@@ -271,7 +283,7 @@ export async function sendCustomerVerificationEmail({
   loginLink,
 }: CustomerVerificationParams) {
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResendClient().emails.send({
       from: 'PapaEgo Verification <verify@papaego.com>',
       to: email,
       subject: "Welcome to PapaEgo - Account Verified!",
@@ -335,7 +347,7 @@ export async function sendKycRejectionEmail({
   loginLink,
 }: KycRejectionParams) {
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResendClient().emails.send({
       from: 'PapaEgo Compliance <compliance@papaego.com>',
       to: email,
       subject: "Action Required: Update Your PapaEgo Verification Documents",
@@ -408,7 +420,7 @@ export async function sendAgentSuspensionEmail({
   agentName,
 }: AgentSuspensionParams) {
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResendClient().emails.send({
       from: 'PapaEgo Compliance <compliance@papaego.com>',
       to: email,
       subject: "Important: Your PapaEgo Agent Account Status",
@@ -477,7 +489,7 @@ export async function sendTradeCompletionEmail({
 }: TradeCompletionParams) {
   try {
     const recipients = [email, ...(adminEmails || [])];
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResendClient().emails.send({
       from: 'PapaEgo <transactions@papaego.com>',
       to: recipients,
       subject: `Your PapaEgo Trade #${tradeId} is Complete! 🎉`,
@@ -590,7 +602,7 @@ export async function sendTradeInitiatedEmail({
   adminEmails,
 }: TradeInitiatedParams) {
   try {
-    await resend.emails.send({
+    await getResendClient().emails.send({
       from: 'PapaEgo <requests@papaego.com>',
       to: [agentEmail, ...(adminEmails || [])],
       subject: `New Trade Request: ${customerName} initiated a trade`,
@@ -641,7 +653,7 @@ export async function sendSupplierConfirmedEmail({
   adminEmails,
 }: SupplierConfirmedParams) {
   try {
-    await resend.emails.send({
+    await getResendClient().emails.send({
       from: 'PapaEgo <updates@papaego.com>',
       to: [customerEmail, ...(adminEmails || [])],
       subject: `Action Required: Quote Ready for Trade #${tradeId}`,
@@ -688,7 +700,7 @@ export async function sendTradeCancelledEmail({
 }) {
     const recipients = [customerEmail, ...(adminEmails || [])];
   try {
-    await resend.emails.send({
+    await getResendClient().emails.send({
       from: 'PapaEgo <support@papaego.com>',
       to: recipients,
       subject: `Update on your Trade #${tradeId}`,
@@ -736,7 +748,7 @@ export async function sendPaymentDetailsEmail({
   dashboardLink: string;
 }) {
   try {
-    await resend.emails.send({
+    await getResendClient().emails.send({
       from: 'PapaEgo <payments@papaego.com>',
       to: customerEmail,
       subject: `Action Required: Pay for Trade #${tradeId}`,
@@ -777,7 +789,7 @@ export async function sendReceiptUploadedEmail({
   dashboardLink: string;
 }) {
   try {
-    await resend.emails.send({
+    await getResendClient().emails.send({
       from: 'PapaEgo <alerts@papaego.com>',
       to: adminEmail,
       subject: `Receipt Uploaded for Trade #${tradeId}`,
@@ -815,7 +827,7 @@ export async function sendTradeCompletedWithReceiptEmail({
   dashboardLink: string;
 }) {
   try {
-    await resend.emails.send({
+    await getResendClient().emails.send({
       from: 'PapaEgo <updates@papaego.com>',
       to: customerEmail,
       subject: `Trade Completed! View Receipt for #${tradeId}`,
@@ -853,7 +865,7 @@ export async function sendAdminMessageEmail({
   message: string;
 }) {
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResendClient().emails.send({
       from: 'PapaEgo Support <support@papaego.com>',
       to: email,
       subject: subject || "Message from PapaEgo Administration",
@@ -919,7 +931,7 @@ export async function sendRateQuotedEmail({
   dashboardLink,
 }: RateQuotedParams) {
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResendClient().emails.send({
       from: 'PapaEgo <updates@papaego.com>',
       to: customerEmail,
       subject: `Exchange Rate Set for Trade #${tradeId}`,
@@ -958,10 +970,10 @@ interface SendOtpParams {
 
 export async function sendOtpEmail({ email, userName, otp }: SendOtpParams) {
   try {
-    const fromAddress = process.env.RESEND_FROM_EMAIL || 'PapaEgo Verification <onboarding@resend.dev>';
+    const fromAddress = process.env.RESEND_FROM_EMAIL || 'PapaEgo Verification <verify@papaego.com>';
     console.log(`📧 Sending Resend OTP email to ${email}...`);
 
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResendClient().emails.send({
       from: fromAddress,
       to: email,
       subject: "Verify Your PapaEgo Account",
@@ -1002,6 +1014,9 @@ This OTP is valid for 15 minutes. Please do not share this code with anyone.
 
     if (error) {
       console.error("❌ Error sending OTP email via Resend:", error.message);
+      if (error.message.includes("only send testing emails to your own email address")) {
+        console.warn("\n💡 RESEND SANDBOX RESTRICTION: Resend free tier limits test emails to your registered email address (edehjohnpaul@gmail.com). To send emails to any recipient, verify a domain at https://resend.com/domains.\n");
+      }
       return { success: false, error: error.message };
     }
 
@@ -1012,5 +1027,105 @@ This OTP is valid for 15 minutes. Please do not share this code with anyone.
     return { success: false, error: error?.message || "Failed to send email" };
   }
 }
+
+/**
+ * Sends notification when bank account provisioning is PENDING
+ */
+export async function sendProvisioningPendingEmail({ email, companyName }: { email: string; companyName: string }) {
+  try {
+    const fromAddress = process.env.RESEND_FROM_EMAIL || 'PapaEgo Banking <verify@papaego.com>';
+    console.log(`📧 Sending Bank Provisioning Pending email to ${email}...`);
+
+    const { data, error } = await getResendClient().emails.send({
+      from: fromAddress,
+      to: email,
+      subject: `Account Provisioning Pending - ${companyName}`,
+      text: `Hello, your managed U.S. bank account request for ${companyName} is currently pending provisioning with FV Bank. We will notify you once active.`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px;">
+          <h2 style="color: #012333;">Managed U.S. Bank Account Pending</h2>
+          <p>Hello,</p>
+          <p>Your request for a dedicated managed U.S. bank account for <strong>${companyName}</strong> has been received and is currently <strong>PENDING PROVISIONING</strong> with our banking partner (FV Bank).</p>
+          <p>We will notify you immediately as soon as your account details are generated.</p>
+        </div>
+      `
+    });
+
+    if (error) console.error("❌ Error sending pending email:", error.message);
+    return { success: !error, messageId: data?.id };
+  } catch (err: any) {
+    console.error("❌ Exception in sendProvisioningPendingEmail:", err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Sends notification when bank account provisioning is CREATED / ACTIVE
+ */
+export async function sendProvisioningSuccessEmail({ email, companyName, accountNumber, routingNumber }: { email: string; companyName: string; accountNumber: string; routingNumber: string }) {
+  try {
+    const fromAddress = process.env.RESEND_FROM_EMAIL || 'PapaEgo Banking <verify@papaego.com>';
+    console.log(`📧 Sending Bank Provisioning Success email to ${email}...`);
+
+    const { data, error } = await getResendClient().emails.send({
+      from: fromAddress,
+      to: email,
+      subject: `🎉 Your Managed U.S. Bank Account is Active - ${companyName}`,
+      text: `Hello, your managed U.S. bank account for ${companyName} is now ACTIVE. Routing: ${routingNumber}, Account: ${accountNumber}`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px;">
+          <h2 style="color: #012333;">Your Managed U.S. Bank Account is Active! 🎉</h2>
+          <p>Hello,</p>
+          <p>Your dedicated FV Bank U.S. Account for <strong>${companyName}</strong> has been successfully provisioned!</p>
+          <div style="background-color: #f4f6f8; padding: 15px; border-radius: 8px; margin: 15px 0;">
+            <p><strong>Bank Name:</strong> FV Bank</p>
+            <p><strong>Routing Number:</strong> ${routingNumber}</p>
+            <p><strong>Account Number:</strong> ${accountNumber}</p>
+            <p><strong>Currency:</strong> USD</p>
+          </div>
+          <p>Log into your PapaEgo Business Dashboard to view complete banking instructions.</p>
+        </div>
+      `
+    });
+
+    if (error) console.error("❌ Error sending success email:", error.message);
+    return { success: !error, messageId: data?.id };
+  } catch (err: any) {
+    console.error("❌ Exception in sendProvisioningSuccessEmail:", err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Sends alert to Operations / Admin when bank account provisioning fails
+ */
+export async function sendProvisioningFailedOpsEmail({ adminEmail, companyName, errorReason, organizationId }: { adminEmail: string; companyName: string; errorReason: string; organizationId: string }) {
+  try {
+    const fromAddress = process.env.RESEND_FROM_EMAIL || 'PapaEgo Banking Alerts <verify@papaego.com>';
+    console.log(`🚨 Sending Provisioning Failure Ops Alert to ${adminEmail}...`);
+
+    const { data, error } = await getResendClient().emails.send({
+      from: fromAddress,
+      to: adminEmail,
+      subject: `🚨 ALERT: Bank Provisioning Failed - ${companyName}`,
+      text: `CRITICAL ALERT: Account creation failed for ${companyName} (Org ID: ${organizationId}). Error: ${errorReason}`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px; border-left: 4px solid #ef4444;">
+          <h2 style="color: #ef4444;">🚨 CRITICAL OPS ALERT: Bank Account Provisioning Failed</h2>
+          <p>Managed account provisioning for <strong>${companyName}</strong> (Organization ID: ${organizationId}) encountered an error.</p>
+          <p><strong>Failure Reason:</strong> ${errorReason}</p>
+          <p>Please inspect the Organization detail page in the Admin Portal to retry or review compliance requirements.</p>
+        </div>
+      `
+    });
+
+    if (error) console.error("❌ Error sending ops alert email:", error.message);
+    return { success: !error, messageId: data?.id };
+  } catch (err: any) {
+    console.error("❌ Exception in sendProvisioningFailedOpsEmail:", err.message);
+    return { success: false, error: err.message };
+  }
+}
+
 
 

@@ -69,6 +69,14 @@ import {
     updateTurnoverConfig,
 } from "../negotiation/negotiation.controller";
 import { listAllCashouts, updateCashoutStatus } from "../agents/agent.cashout.controller";
+import {
+    getOrganizations,
+    getOrganizationDetail,
+    updateKycStatus,
+    updateKybStatus,
+    updateOrganizationStatus,
+    adminProvisionBank
+} from "./admin.organizations.controller";
 
 const router = Router();
 
@@ -153,5 +161,13 @@ router.get("/negotiation/config", getNegotiationSettings);
 router.patch("/negotiation/config", updateNegotiationSettings);
 router.get("/turnover/today", getTurnoverStats);
 router.post("/turnover/config", updateTurnoverConfig);
+
+// ── Business Organizations & Compliance (Admin) ──────────────────────────────
+router.get("/organizations", getOrganizations);
+router.get("/organizations/:id", getOrganizationDetail);
+router.post("/organizations/:id/kyc/status", updateKycStatus);
+router.post("/organizations/:id/kyb/status", updateKybStatus);
+router.post("/organizations/:id/status", updateOrganizationStatus);
+router.post("/organizations/:id/provision-bank", adminProvisionBank);
 
 export default router;

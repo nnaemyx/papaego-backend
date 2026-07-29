@@ -191,7 +191,7 @@ model AgentProfile {
   referralCode          String?   @unique
   agentType             String    @default("Field Agent")
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 // ---------- CUSTOMERS ----------
@@ -225,7 +225,7 @@ model Customer {
   referralCode     String?
   referralType     String? // AGENT | CORPORATE | DIRECT
 
-  user               User                    @relation(fields: [userId], references: [id])
+  user               User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   notes              CustomerNote[]
   documents          CustomerDocument[]
   trades             Trade[]                 @relation("CustomerTrades")
@@ -918,6 +918,13 @@ model Organization {
   statusHistory      VerificationStatusHistory[]
   webhooks           ComplianceWebhook[]
 
+  // Sprint 2: Managed Banking relations
+  bankAccount        BankAccount?
+  bankingProfile     BankingProfile?
+  bankEvents         BankAccountEvent[]
+  bankSyncLogs       BankAccountSyncLog[]
+  bankWebhooks       BankAccountWebhook[]
+
   @@index([ownerId])
   @@index([status])
 }
@@ -1115,3 +1122,152 @@ model NotificationLog {
   @@index([type])
   @@index([createdAt])
 }
+
+// ---------- SPRINT 2: MANAGED BANKING ENUMS ----------
+
+enum BankAccountStatus {
+  PENDING_CREATION
+  CREATING
+  ACTIVE
+  RESTRICTED
+  SUSPENDED
+  FROZEN
+  CLOSED
+}
+
+enum BankAccountSyncType {
+  MANUAL
+  SCHEDULED
+  WEBHOOK
+}
+
+enum BankingWebhookEvent {
+  ACCOUNT_CREATED
+  ACCOUNT_ACTIVATED
+  ACCOUNT_SUSPENDED
+  ACCOUNT_FROZEN
+  ACCOUNT_CLOSED
+  BANKING_INFO_UPDATED
+}
+
+// ---------- SPRINT 2: MANAGED BANK ACCOUNTS ----------
+
+model BankAccount {
+  id               String            @id @default(uuid())
+  organizationId   String            @unique
+  fvAccountId      String?           @unique
+  accountNumber    String
+  routingNumber    String
+  accountHolder    String
+  bankName         String            @default("FV Bank")
+  currency         String            @default("USD")
+  country          String?           @default("United States")
+  swiftBic         String?
+  accountReference String?
+  status           BankAccountStatus @default(PENDING_CREATION)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  organization   Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  bankingProfile BankingProfile?
+  events         BankAccountEvent[]
+  syncLogs       BankAccountSyncLog[]
+  webhooks       BankAccountWebhook[]
+
+  @@index([organizationId])
+  @@index([fvAccountId])
+  @@index([status])
+}
+
+// ---------- SPRINT 2: BANK ACCOUNT EVENTS ----------
+
+model BankAccountEvent {
+  id             String            @id @default(uuid())
+  bankAccountId  String
+  organizationId String
+  event          String            // e.g. ACCOUNT_CREATED, STATUS_CHANGE, WEBHOOK_RECEIVED, SYNC
+  source         String            // FV_BANK_WEBHOOK | SYSTEM | SYNC | ADMIN
+  statusFrom     BankAccountStatus?
+  statusTo       BankAccountStatus?
+  details        String?
+  metadata       Json?
+  createdAt      DateTime          @default(now())
+
+  bankAccount  BankAccount  @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([bankAccountId])
+  @@index([organizationId])
+  @@index([event])
+  @@index([createdAt])
+}
+
+// ---------- SPRINT 2: BANKING PROFILES ----------
+
+model BankingProfile {
+  id                 String            @id @default(uuid())
+  organizationId     String            @unique
+  bankAccountId      String            @unique
+  bankName           String            @default("FV Bank")
+  accountHolder      String
+  maskedAccountNumber String           // e.g. "•••• 6789"
+  accountNumber      String            // Encrypted/Stored
+  routingNumber      String
+  currency           String            @default("USD")
+  status             BankAccountStatus @default(ACTIVE)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  bankAccount  BankAccount  @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([bankAccountId])
+  @@index([status])
+}
+
+// ---------- SPRINT 2: BANK ACCOUNT SYNC LOGS ----------
+
+model BankAccountSyncLog {
+  id              String              @id @default(uuid())
+  bankAccountId   String
+  organizationId  String
+  syncType        BankAccountSyncType @default(MANUAL)
+  status          String              // SUCCESS | FAILED | NO_CHANGE
+  changesDetected Json?
+  errorMessage    String?
+  createdAt       DateTime            @default(now())
+
+  bankAccount  BankAccount  @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([bankAccountId])
+  @@index([organizationId])
+  @@index([createdAt])
+}
+
+// ---------- SPRINT 2: BANK ACCOUNT WEBHOOKS ----------
+
+model BankAccountWebhook {
+  id             String              @id @default(uuid())
+  organizationId String?
+  bankAccountId  String?
+  event          BankingWebhookEvent
+  payload        Json
+  signature      String?
+  processed      Boolean             @default(false)
+  processedAt    DateTime?
+  errorMessage   String?
+  retryCount     Int                 @default(0)
+  createdAt      DateTime            @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  bankAccount  BankAccount?  @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([bankAccountId])
+  @@index([event])
+  @@index([processed])
+  @@index([createdAt])
+}
+

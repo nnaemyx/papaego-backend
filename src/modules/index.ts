@@ -22,9 +22,12 @@ import agentApplicationRoutes from "./agent-applications/agent-application.route
 import treasuryRoutes from "./treasury/treasury.routes";
 import exchangeRateRoutes from "./exchange-rate/exchange-rate.routes";
 
-// Sprint 1: Organization onboarding & compliance
+// Sprint 1: New onboarding routes
 import organizationRoutes from "./organizations/organization.routes";
 import qualificationRoutes from "./qualification/qualification.routes";
+
+// Sprint 2: Managed Banking routes
+import bankingRoutes from "./banking/banking.routes";
 
 const router = Router();
 
@@ -56,6 +59,9 @@ router.use("/exchange-rate", exchangeRateRoutes);
 // Sprint 1: New onboarding routes
 router.use("/organizations", organizationRoutes);
 router.use("/qualification", qualificationRoutes);
+
+// Sprint 2: Managed Banking routes
+router.use("/banking", bankingRoutes);
 
 export default router;
 
