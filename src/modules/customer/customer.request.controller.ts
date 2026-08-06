@@ -3,6 +3,9 @@ import prisma from "../../config/db";
 import { sendTradeInitiatedEmail } from "../../services/email.service";
 import { createNotification } from "../notifications/notification.service";
 import { checkAndRefreshTradeRequestExpiry } from "./customer.portal.routes";
+import { assertSufficientBalance, reserveFunds, releaseReservation, InsufficientFundsError } from "../wallet/wallet.service";
+
+
 
 /**
  * Customer initiates a trade request
@@ -37,6 +40,24 @@ export async function createTradeRequest(req: Request, res: Response) {
             return res.status(400).json({ error: "Amount is required" });
         }
 
+        // Enforce wallet funding: a submitted (non-draft) request must be fully
+        // backed by the customer's available wallet balance in the send currency.
+        const willSubmit = req.body.status !== "DRAFT";
+        if (willSubmit) {
+            try {
+                await assertSufficientBalance(customerId, parseFloat(String(amount)));
+            } catch (err) {
+                if (err instanceof InsufficientFundsError) {
+                    return res.status(402).json({
+                        error: "Insufficient wallet balance. Please fund your wallet before submitting this trade.",
+                        code: "INSUFFICIENT_FUNDS",
+                        detail: err.message,
+                    });
+                }
+                throw err;
+            }
+        }
+
         let actualSupplierBusinessName = businessName || null;
         let actualSupplierBankName = bankName || null;
         let actualSupplierAccountNumber = accountNumber || null;
@@ -54,32 +75,60 @@ export async function createTradeRequest(req: Request, res: Response) {
             }
         }
 
-        const tradeRequest = await prisma.tradeRequest.create({
-            data: {
-                customerId,
-                agentId: agentId || null,
-                amount: parseFloat(String(amount)),
-                sendCurrency,
-                receiveCurrency,
-                purpose,
-                tradeType: tradeType || "BUY",
-                receiptUrl,
-                status: req.body.status === "DRAFT" ? "DRAFT" : "PENDING",
-                invoiceUrl,
-                supplierId: supplierId || null,
-                supplierBusinessName: actualSupplierBusinessName,
-                supplierBankName: actualSupplierBankName,
-                supplierAccountNumber: actualSupplierAccountNumber,
-                supplierSector: actualSupplierSector,
-                supplierAddress: actualSupplierAddress,
-            },
+        // Create the request and, if submitting, reserve the wallet funds in the
+        // SAME db transaction so a submitted request is always fully backed. If
+        // the reserve fails (e.g. a concurrent submission drained the balance),
+        // the whole thing rolls back and nothing is created.
+        const tradeRequest = await prisma.$transaction(async (tx) => {
+            const created = await tx.tradeRequest.create({
+                data: {
+                    customerId,
+                    agentId: agentId || null,
+                    amount: parseFloat(String(amount)),
+                    sendCurrency,
+                    receiveCurrency,
+                    purpose,
+                    tradeType: tradeType || "BUY",
+                    receiptUrl,
+                    status: req.body.status === "DRAFT" ? "DRAFT" : "PENDING",
+                    invoiceUrl,
+                    supplierId: supplierId || null,
+                    supplierBusinessName: actualSupplierBusinessName,
+                    supplierBankName: actualSupplierBankName,
+                    supplierAccountNumber: actualSupplierAccountNumber,
+                    supplierSector: actualSupplierSector,
+                    supplierAddress: actualSupplierAddress,
+                },
+            });
+
+            if (created.status !== "DRAFT") {
+                await reserveFunds(
+                    customerId,
+                    parseFloat(String(amount)),
+                    {
+                        description: `Funds reserved for trade request ${created.id.slice(0, 8).toUpperCase()}`,
+                        tradeRequestId: created.id,
+                        actorId: (req as any).user.id,
+                    },
+                    tx
+                );
+            }
+
+            return created;
+        }, {
+            timeout: 15000,
+        });
+
+        // Re-fetch with includes outside the transaction to avoid timeout
+        const fullTradeRequest = await prisma.tradeRequest.findUnique({
+            where: { id: tradeRequest.id },
             include: {
                 customer: { include: { user: true } },
                 agent: true,
             },
         });
 
-        if (tradeRequest.status !== "DRAFT") {
+        if (fullTradeRequest && fullTradeRequest.status !== "DRAFT") {
             // Notify all ADMIN users about the new trade request
             const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
             await Promise.allSettled(
@@ -87,7 +136,7 @@ export async function createTradeRequest(req: Request, res: Response) {
                     createNotification(
                         admin.id,
                         "New Trade Request",
-                        `Customer ${tradeRequest.customer.fullName || 'Unknown'} has submitted a trade request for ${amount} ${sendCurrency} → ${receiveCurrency}.`,
+                        `Customer ${fullTradeRequest.customer?.fullName || 'Unknown'} has submitted a trade request for ${amount} ${sendCurrency} → ${receiveCurrency}.`,
                         "INFO"
                     )
                 )
@@ -95,25 +144,33 @@ export async function createTradeRequest(req: Request, res: Response) {
 
             // Also notify agent and admins via email
             const adminEmails = admins.map(a => a.email).filter((e): e is string => !!e);
-            if (tradeRequest.agent?.email) {
+            if (fullTradeRequest.agent?.email) {
                 await sendTradeInitiatedEmail({
-                    agentEmail: tradeRequest.agent.email,
-                    agentName: tradeRequest.agent.firstName || "Agent",
-                    customerName: tradeRequest.customer.fullName || 'Unknown',
+                    agentEmail: fullTradeRequest.agent.email,
+                    agentName: fullTradeRequest.agent.firstName || "Agent",
+                    customerName: fullTradeRequest.customer?.fullName || 'Unknown',
                     amount: amount.toString(),
                     currency: sendCurrency,
-                    tradeId: tradeRequest.id.slice(0, 8).toUpperCase(),
+                    tradeId: fullTradeRequest.id.slice(0, 8).toUpperCase(),
                     adminEmails,
                 });
             }
         }
 
-        res.status(201).json(tradeRequest);
+        res.status(201).json(fullTradeRequest || tradeRequest);
     } catch (error) {
+        if (error instanceof InsufficientFundsError) {
+            return res.status(402).json({
+                error: "Insufficient wallet balance. Please fund your wallet before submitting this trade.",
+                code: "INSUFFICIENT_FUNDS",
+                detail: error.message,
+            });
+        }
         console.error("Error creating trade request:", error);
         res.status(500).json({ error: "Failed to initiate trade request" });
     }
 }
+
 
 /**
  * Get customer's trade requests
@@ -278,65 +335,119 @@ export async function updateCustomerTradeRequest(req: Request, res: Response) {
 
         const oldStatus = request.status;
         const newStatus = status === "PENDING" ? "PENDING" : request.status;
+        const isPublishing = oldStatus === "DRAFT" && newStatus === "PENDING";
+        const effectiveAmount = amount !== undefined ? parseFloat(String(amount)) : Number(request.amount);
 
-        const updated = await prisma.tradeRequest.update({
-            where: { id },
-            data: {
-                amount: amount !== undefined ? parseFloat(String(amount)) : undefined,
-                sendCurrency,
-                receiveCurrency,
-                purpose,
-                tradeType,
-                receiptUrl,
-                invoiceUrl,
-                supplierId: supplierId || undefined,
-                supplierBusinessName: actualSupplierBusinessName,
-                supplierBankName: actualSupplierBankName,
-                supplierAccountNumber: actualSupplierAccountNumber,
-                supplierSector: actualSupplierSector,
-                supplierAddress: actualSupplierAddress,
-                status: newStatus,
-            },
+        // If publishing a draft, ensure the wallet can back the trade before we
+        // even attempt the update, so we can return a clean 402 to the client.
+        if (isPublishing) {
+            try {
+                await assertSufficientBalance(customerId, effectiveAmount);
+            } catch (err) {
+                if (err instanceof InsufficientFundsError) {
+                    return res.status(402).json({
+                        error: "Insufficient wallet balance. Please fund your wallet before submitting this trade.",
+                        code: "INSUFFICIENT_FUNDS",
+                        detail: err.message,
+                    });
+                }
+                throw err;
+            }
+        }
+
+        // Update the request and — when publishing DRAFT→PENDING — reserve the
+        // wallet funds atomically so the submitted request is fully backed.
+        const updated = await prisma.$transaction(async (tx) => {
+            const u = await tx.tradeRequest.update({
+                where: { id },
+                data: {
+                    amount: amount !== undefined ? parseFloat(String(amount)) : undefined,
+                    sendCurrency,
+                    receiveCurrency,
+                    purpose,
+                    tradeType,
+                    receiptUrl,
+                    invoiceUrl,
+                    supplierId: supplierId || undefined,
+                    supplierBusinessName: actualSupplierBusinessName,
+                    supplierBankName: actualSupplierBankName,
+                    supplierAccountNumber: actualSupplierAccountNumber,
+                    supplierSector: actualSupplierSector,
+                    supplierAddress: actualSupplierAddress,
+                    status: newStatus,
+                },
+            });
+
+            if (isPublishing) {
+                await reserveFunds(
+                    customerId,
+                    effectiveAmount,
+                    {
+                        description: `Funds reserved for trade request ${u.id.slice(0, 8).toUpperCase()}`,
+                        tradeRequestId: u.id,
+                        actorId: (req as any).user.id,
+                    },
+                    tx
+                );
+            }
+
+            return u;
+        }, {
+            timeout: 15000,
+        });
+
+        // Re-fetch with includes outside transaction
+        const fullUpdated = await prisma.tradeRequest.findUnique({
+            where: { id: updated.id },
             include: {
                 customer: { include: { user: true } },
                 agent: true,
-            }
+            },
         });
 
+
         // If transitioning from DRAFT to PENDING, notify admins & agents
-        if (oldStatus === "DRAFT" && newStatus === "PENDING") {
+        if (oldStatus === "DRAFT" && newStatus === "PENDING" && fullUpdated) {
             const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
             await Promise.allSettled(
                 admins.map((admin) =>
                     createNotification(
                         admin.id,
                         "New Trade Request (Published)",
-                        `Customer ${updated.customer.fullName || 'Unknown'} has submitted a trade request for ${updated.amount} ${updated.sendCurrency} → ${updated.receiveCurrency}.`,
+                        `Customer ${fullUpdated.customer?.fullName || 'Unknown'} has submitted a trade request for ${fullUpdated.amount} ${fullUpdated.sendCurrency} → ${fullUpdated.receiveCurrency}.`,
                         "INFO"
                     )
                 )
             );
 
             const adminEmails = admins.map(a => a.email).filter((e): e is string => !!e);
-            if (updated.agent?.email) {
+            if (fullUpdated.agent?.email) {
                 await sendTradeInitiatedEmail({
-                    agentEmail: updated.agent.email,
-                    agentName: updated.agent.firstName || "Agent",
-                    customerName: updated.customer.fullName || 'Unknown',
-                    amount: updated.amount.toString(),
-                    currency: updated.sendCurrency,
-                    tradeId: updated.id.slice(0, 8).toUpperCase(),
+                    agentEmail: fullUpdated.agent.email,
+                    agentName: fullUpdated.agent.firstName || "Agent",
+                    customerName: fullUpdated.customer?.fullName || 'Unknown',
+                    amount: fullUpdated.amount.toString(),
+                    currency: fullUpdated.sendCurrency,
+                    tradeId: fullUpdated.id.slice(0, 8).toUpperCase(),
                     adminEmails,
                 });
             }
         }
 
-        res.json(updated);
+        res.json(fullUpdated || updated);
     } catch (error) {
+        if (error instanceof InsufficientFundsError) {
+            return res.status(402).json({
+                error: "Insufficient wallet balance. Please fund your wallet before submitting this trade.",
+                code: "INSUFFICIENT_FUNDS",
+                detail: error.message,
+            });
+        }
         console.error("Error updating trade request:", error);
         res.status(500).json({ error: "Failed to update trade request" });
     }
 }
+
 
 /**
  * Cancel customer's trade request
@@ -356,10 +467,35 @@ export async function cancelCustomerTradeRequest(req: Request, res: Response) {
             return res.status(400).json({ error: `Cannot cancel request in ${request.status} status` });
         }
 
-        const updated = await prisma.tradeRequest.update({
-            where: { id },
-            data: { status: "CANCELLED" }
+        // Funds are only reserved once a request leaves DRAFT. When cancelling a
+        // reserved request, release the held funds back to available in the same
+        // transaction as the status change so the two never drift apart.
+        const hadReservedFunds = request.status !== "DRAFT";
+
+        const updated = await prisma.$transaction(async (tx) => {
+            const u = await tx.tradeRequest.update({
+                where: { id },
+                data: { status: "CANCELLED" }
+            });
+
+            if (hadReservedFunds) {
+                await releaseReservation(
+                    customerId,
+                    Number(request.amount),
+                    {
+                        description: `Funds released after cancelling trade request ${request.id.slice(0, 8).toUpperCase()}`,
+                        tradeRequestId: request.id,
+                        actorId: (req as any).user.id,
+                    },
+                    tx
+                );
+            }
+
+            return u;
+        }, {
+            timeout: 15000,
         });
+
 
         // Notify assigned agent (if any) or admin
         if (request.agentId) {

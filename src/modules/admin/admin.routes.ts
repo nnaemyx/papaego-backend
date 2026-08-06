@@ -77,8 +77,15 @@ import {
     updateOrganizationStatus,
     adminProvisionBank
 } from "./admin.organizations.controller";
+import {
+    getAdminDeposits,
+    approveDeposit,
+    rejectDeposit,
+} from "../wallet/deposit.controller";
+import { getCustomerWalletForAdmin } from "../wallet/wallet.controller";
 
 const router = Router();
+
 
 router.use(auth);
 router.use(requireRole("ADMIN"));
@@ -170,4 +177,12 @@ router.post("/organizations/:id/kyb/status", updateKybStatus);
 router.post("/organizations/:id/status", updateOrganizationStatus);
 router.post("/organizations/:id/provision-bank", adminProvisionBank);
 
+// ── Wallet & Deposits (Admin) ────────────────────────────────────────────────
+router.get("/deposits", getAdminDeposits);
+router.patch("/deposits/:id/approve", approveDeposit);
+router.patch("/deposits/:id/reject", rejectDeposit);
+router.get("/customers/:customerId/wallet", getCustomerWalletForAdmin);
+
 export default router;
+
+

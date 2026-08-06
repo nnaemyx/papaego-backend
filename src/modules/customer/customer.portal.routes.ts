@@ -10,8 +10,8 @@ export async function getCurrentFxRateForPair(sendCurrency: string, receiveCurre
     const rates = config.value as any[];
     if (!Array.isArray(rates)) return null;
 
-    const pairName = sendCurrency === 'NGN' 
-        ? `${receiveCurrency}/NGN` 
+    const pairName = sendCurrency === 'NGN'
+        ? `${receiveCurrency}/NGN`
         : `${sendCurrency}/NGN`;
 
     const matchingRate = rates.find(r => r.pair === pairName && r.isActive);
@@ -64,7 +64,7 @@ export async function checkAndRefreshTradeExpiry(trade: any): Promise<any> {
 
 export async function checkAndRefreshTradeRequestExpiry(tradeRequest: any): Promise<any> {
     const now = new Date();
-    const expiryTime = tradeRequest.quotedAt 
+    const expiryTime = tradeRequest.quotedAt
         ? new Date(new Date(tradeRequest.quotedAt).getTime() + 10 * 60 * 1000)
         : null;
 
@@ -129,6 +129,12 @@ import {
     checkNegotiationEligibility as checkCustomerNegotiationEligibility,
     requestNegotiation as requestCustomerNegotiation,
 } from "../negotiation/negotiation.controller";
+import { getMyWallet } from "../wallet/wallet.controller";
+import {
+    createDepositRequest,
+    getCustomerDeposits,
+    cancelDepositRequest,
+} from "../wallet/deposit.controller";
 
 const router = Router();
 
@@ -140,16 +146,33 @@ router.post("/signup/resend", resendSignupOtp);
 router.post("/signup/upload", uploadToCloudinary.single("file"), uploadCustomerDocument);
 
 // --- Auth required from here ---
-router.use(auth, requireRole("CUSTOMER"));
+router.use(auth, requireRole("CUSTOMER", "ORG_OWNER", "ORG_ADMIN"));
 
 // Middleware to populate Customer profile on req.user
 const populateCustomer = async (req: Request, res: Response, next: any) => {
     try {
-        const userId = (req as any).user.id;
-        const customer = await prisma.customer.findUnique({ where: { userId } });
+        const user = (req as any).user;
+        const userId = user.id;
+        let customer = await prisma.customer.findUnique({ where: { userId } });
+
         if (!customer) {
-            return res.status(404).json({ error: "Customer profile not found" });
+            // Auto-create Customer profile if user is ORG_OWNER or ORG_ADMIN
+            const nameParts = [user.firstName, user.lastName].filter(Boolean);
+            const fullName = nameParts.length > 0 ? nameParts.join(" ") : (user.email ? user.email.split("@")[0] : "Business Customer");
+
+            customer = await prisma.customer.create({
+                data: {
+                    userId,
+                    bvn: "N/A",
+                    fullName,
+                    email: user.email,
+                    phone: user.phone,
+                    verified: true,
+                    kycStatus: "APPROVED"
+                }
+            });
         }
+
         (req as any).user.customer = customer;
         next();
     } catch (error) {
@@ -172,7 +195,7 @@ router.get("/me", async (req: Request, res: Response) => {
         // Here we need 'user' relation for email/phone etc. 
         const fullCustomer = await prisma.customer.findUnique({
             where: { id: customer.id },
-            include: { 
+            include: {
                 user: { select: { email: true, firstName: true, lastName: true, phone: true, createdAt: true } },
                 bankDetails: true
             },
@@ -197,11 +220,12 @@ router.get("/dashboard/stats", async (req: Request, res: Response) => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        const [allTrades, todayTrades] = await Promise.all([
+        const [allTrades, todayTrades, wallet] = await Promise.all([
             prisma.trade.findMany({ where: { customerId: customer.id } }),
             prisma.trade.findMany({
                 where: { customerId: customer.id, createdAt: { gte: today } },
             }),
+            prisma.customerWallet.findUnique({ where: { customerId: customer.id } }),
         ]);
 
         const pendingStatuses = ["REQUESTED", "INITIATED", "QUOTED", "SENT_TO_CUSTOMER", "AWAITING_PAYMENT", "CUSTOMER_CONFIRMED", "CUSTOMER_VERIFIED"];
@@ -213,6 +237,8 @@ router.get("/dashboard/stats", async (req: Request, res: Response) => {
             pendingActions: pendingTrades.length,
             kycVerified: customer.verified,
             kycStatus: customer.kycStatus || "NOT_SUBMITTED",
+            availableBalance: wallet ? Number(wallet.availableBalance) : 0,
+            reservedBalance: wallet ? Number(wallet.reservedBalance) : 0,
         });
     } catch (error) {
         console.error("Error fetching dashboard stats:", error);
@@ -508,7 +534,7 @@ router.get("/trades/:id", async (req: Request, res: Response) => {
 
         let rateExpiresIn: number | null = null;
         let isExpired = false;
-        const targetLockTime = activeRequest.quotedAt 
+        const targetLockTime = activeRequest.quotedAt
             ? new Date(new Date(activeRequest.quotedAt).getTime() + 10 * 60 * 1000)
             : null;
         if (activeRequest.status === "QUOTED" && targetLockTime) {
@@ -1011,5 +1037,10 @@ router.post("/feedback", async (req: Request, res: Response) => {
     }
 });
 
+// --- Wallet & Deposits ---
+router.get("/wallet", getMyWallet);
+router.post("/wallet/deposits", uploadToCloudinary.single("proof"), createDepositRequest);
+router.get("/wallet/deposits", getCustomerDeposits);
+router.patch("/wallet/deposits/:id/cancel", cancelDepositRequest);
 
 export default router;

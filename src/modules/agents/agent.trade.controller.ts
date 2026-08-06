@@ -6,6 +6,13 @@ import { getLockedRate } from "../fx/fx.service";
 import { randomUUID } from "node:crypto";
 import { sendSupplierConfirmedEmail, sendTradeCompletionEmail, sendTradeCancelledEmail } from "../../services/email.service";
 import { triggerTradeCommission } from "../commission/commission.service";
+import { settleReservation } from "../wallet/wallet.service";
+
+// Trade request states in which wallet funds are reserved (held) but not yet
+// settled. Used to decide whether an outbound settlement should draw down a
+// held reservation.
+const RESERVED_STATES = ["PENDING", "POOL", "ASSIGNED", "QUOTED"] as const;
+
 
 export async function createTrade(req: Request, res: Response) {
     try {
@@ -66,13 +73,37 @@ export async function createTrade(req: Request, res: Response) {
             }
         });
 
-        // If linked to a request, mark request as PROCESSED
+        // If linked to a request, mark request as PROCESSED and settle the held
+        // wallet reservation (funds now leave the wallet permanently). Only
+        // settle when the request was in a reserved state to avoid double-draws.
         if (tradeRequestId) {
-            await prisma.tradeRequest.updateMany({
+            const linkedRequest = await prisma.tradeRequest.findFirst({
                 where: { id: tradeRequestId, agentId },
-                data: { status: "PROCESSED" }
             });
+            if (linkedRequest) {
+                await prisma.$transaction(async (tx) => {
+                    await tx.tradeRequest.update({
+                        where: { id: linkedRequest.id },
+                        data: { status: "PROCESSED" },
+                    });
+
+                    if ((RESERVED_STATES as readonly string[]).includes(linkedRequest.status)) {
+                        await settleReservation(
+                            linkedRequest.customerId,
+                            Number(linkedRequest.amount),
+                            {
+                                description: `Funds settled for processed trade ${trade.id.slice(0, 8).toUpperCase()}`,
+                                tradeRequestId: linkedRequest.id,
+                                tradeId: trade.id,
+                                actorId: agentId,
+                            },
+                            tx
+                        );
+                    }
+                });
+            }
         }
+
 
         await prisma.auditLog.create({
             data: {

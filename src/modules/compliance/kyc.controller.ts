@@ -21,11 +21,13 @@ export async function submitKyc(req: Request, res: Response, next: NextFunction)
             return res.status(400).json({ error: "Organization must complete and pass business qualification before KYC submission." });
         }
 
-        // Check for existing active KYC
+        // Check for existing active KYC. A DRAFT is reusable (previous FV Bank
+        // submission failed and was queued) — everything else blocks a new one.
         const existingKyc = await prisma.kycRequest.findFirst({
-            where: { organizationId, userId, status: { notIn: ["REJECTED", "EXPIRED"] } }
+            where: { organizationId, userId, status: { notIn: ["REJECTED", "EXPIRED"] } },
+            orderBy: { createdAt: "desc" }
         });
-        if (existingKyc) {
+        if (existingKyc && existingKyc.status !== "DRAFT") {
             return res.status(409).json({
                 error: "An active KYC application already exists.",
                 kycId: existingKyc.id,
@@ -33,21 +35,35 @@ export async function submitKyc(req: Request, res: Response, next: NextFunction)
             });
         }
 
-        // Create KYC record in DRAFT
-        const kyc = await prisma.kycRequest.create({
-            data: {
-                organizationId,
-                userId,
-                fullName,
-                dateOfBirth: new Date(dateOfBirth),
-                nationality,
-                residentialAddress,
-                phone,
-                email,
-                idType,
-                status: "DRAFT"
-            }
-        });
+        // Reuse a queued DRAFT record if present, otherwise create a fresh one.
+        const kyc = existingKyc
+            ? await prisma.kycRequest.update({
+                where: { id: existingKyc.id },
+                data: {
+                    fullName,
+                    dateOfBirth: new Date(dateOfBirth),
+                    nationality,
+                    residentialAddress,
+                    phone,
+                    email,
+                    idType,
+                    status: "DRAFT"
+                }
+            })
+            : await prisma.kycRequest.create({
+                data: {
+                    organizationId,
+                    userId,
+                    fullName,
+                    dateOfBirth: new Date(dateOfBirth),
+                    nationality,
+                    residentialAddress,
+                    phone,
+                    email,
+                    idType,
+                    status: "DRAFT"
+                }
+            });
 
         // Submit to FV Bank
         let fvResponse: FvBank.FvApplicationResponse;

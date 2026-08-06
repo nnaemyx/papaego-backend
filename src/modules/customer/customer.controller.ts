@@ -55,7 +55,7 @@ export async function getCustomers(req: Request, res: Response) {
             orderBy: { createdAt: 'desc' }
         });
 
-        // Get transaction counts for each customer
+        // Get transaction counts and organization details for each customer
         const customersWithTrades = await Promise.all(
             customers.map(async (customer) => {
                 const trades = await prisma.trade.findMany({
@@ -73,18 +73,44 @@ export async function getCustomers(req: Request, res: Response) {
                     )
                     : null;
 
+                // Find linked Organization
+                const org = await prisma.organization.findFirst({
+                    where: { ownerId: customer.userId },
+                    include: {
+                        bankAccount: true,
+                        kycRequests: { orderBy: { createdAt: 'desc' }, take: 1 },
+                        kybRequest: true
+                    }
+                });
+
+                const latestKyc = org?.kycRequests?.[0] || null;
+
                 return {
                     id: customer.id,
                     customerId: `PE-${customer.id.slice(0, 6).toUpperCase()}`,
                     name: customer.fullName,
                     lastTrade: lastTrade ? lastTrade.createdAt.toISOString() : null,
                     totalTransactions: trades.length,
-                    verificationStatus: customer.verified ? 'Verified' : 'Pending',
+                    verificationStatus: customer.verified || org?.status === "ACTIVE" ? 'Verified' : 'Pending',
                     email: customer.email,
                     phone: customer.phone || customer.user.phone,
                     createdAt: customer.createdAt,
-                    customerType: customer.companyName ? 'Business' : 'Individual',
-                    companySector: customer.companySector
+                    customerType: customer.companyName || org ? 'Business' : 'Individual',
+                    companyName: customer.companyName || org?.businessName || null,
+                    companySector: customer.companySector || org?.industry || null,
+                    organization: org ? {
+                        id: org.id,
+                        businessName: org.businessName,
+                        status: org.status,
+                        kycStatus: latestKyc?.status || "NOT_SUBMITTED",
+                        kybStatus: org.kybRequest?.status || "NOT_SUBMITTED",
+                        bankAccount: org.bankAccount ? {
+                            accountNumber: org.bankAccount.accountNumber,
+                            routingNumber: org.bankAccount.routingNumber,
+                            bankName: org.bankAccount.bankName,
+                            status: org.bankAccount.status
+                        } : null
+                    } : null
                 };
             })
         );
@@ -281,18 +307,45 @@ export async function getCustomer(req: Request, res: Response) {
 
         const lastTrade = trades.length > 0 ? trades[0] : null;
 
+        // Fetch linked Organization & Bank Account
+        const org = await prisma.organization.findFirst({
+            where: { ownerId: customer.userId },
+            include: {
+                bankAccount: true,
+                kycRequests: { orderBy: { createdAt: 'desc' }, take: 1 },
+                kybRequest: true
+            }
+        });
+
+        const latestKyc = org?.kycRequests?.[0] || null;
+
         res.json({
             ...customer,
             name: customer.fullName,
             phone: customer.phone || customer.user?.phone || null,
             dateJoined: customer.createdAt.toISOString(),
             customerId: `PE-${customer.id.slice(0, 6).toUpperCase()}`,
-            verificationStatus: customer.verified ? 'Verified' : 'Pending',
+            verificationStatus: customer.verified || org?.status === "ACTIVE" ? 'Verified' : 'Pending',
             totalTransactions: allTrades.length,
             totalVolume: `₦${totalVolume.toLocaleString()}`,
             mostTradedPair,
-            customerType: customer.companyName ? 'Business' : 'Individual',
+            customerType: customer.companyName || org ? 'Business' : 'Individual',
+            companyName: customer.companyName || org?.businessName || null,
+            companySector: customer.companySector || org?.industry || null,
             lastTrade: lastTrade?.createdAt.toISOString() || null,
+            organization: org ? {
+                id: org.id,
+                businessName: org.businessName,
+                status: org.status,
+                kycStatus: latestKyc?.status || "NOT_SUBMITTED",
+                kybStatus: org.kybRequest?.status || "NOT_SUBMITTED",
+                bankAccount: org.bankAccount ? {
+                    accountNumber: org.bankAccount.accountNumber,
+                    routingNumber: org.bankAccount.routingNumber,
+                    bankName: org.bankAccount.bankName,
+                    status: org.bankAccount.status
+                } : null
+            } : null,
             recentTrades: trades.map(trade => {
                 const agentUser = agentMap.get(trade.agentId);
                 return {

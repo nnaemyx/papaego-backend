@@ -12,9 +12,10 @@ import {
 
 const router = Router();
 
-// Require all users trying to manage their personal suppliers to be CUSTOMERs
+// Require all users trying to manage their personal suppliers to be authenticated
+// Allow CUSTOMER, ORG_OWNER, and ORG_ADMIN roles (business users)
 router.use(auth);
-router.use(requireRole("CUSTOMER"));
+router.use(requireRole("CUSTOMER", "ORG_OWNER", "ORG_ADMIN"));
 
 // Supplier routes
 router.get("/", getSuppliers);

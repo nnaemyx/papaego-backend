@@ -1,6 +1,56 @@
 import prisma from "../../config/db";
 
 // ─────────────────────────────────────────────────────
+// Verification State Machine
+// Enforces valid status transitions for KYC/KYB entities.
+// Prevents illegal regressions (e.g. APPROVED → PROCESSING)
+// and impossible jumps (e.g. EXPIRED → APPROVED).
+// ─────────────────────────────────────────────────────
+export type VerificationStatusValue =
+    | "DRAFT"
+    | "SUBMITTED"
+    | "PROCESSING"
+    | "MANUAL_REVIEW"
+    | "ADDITIONAL_INFO_REQUIRED"
+    | "APPROVED"
+    | "REJECTED"
+    | "EXPIRED";
+
+const VERIFICATION_STATE_TRANSITIONS: Record<VerificationStatusValue, VerificationStatusValue[]> = {
+    DRAFT: ["DRAFT", "SUBMITTED"],
+    SUBMITTED: ["SUBMITTED", "PROCESSING", "MANUAL_REVIEW", "ADDITIONAL_INFO_REQUIRED", "APPROVED", "REJECTED", "EXPIRED"],
+    PROCESSING: ["PROCESSING", "MANUAL_REVIEW", "ADDITIONAL_INFO_REQUIRED", "APPROVED", "REJECTED", "EXPIRED"],
+    MANUAL_REVIEW: ["MANUAL_REVIEW", "PROCESSING", "ADDITIONAL_INFO_REQUIRED", "APPROVED", "REJECTED", "EXPIRED"],
+    ADDITIONAL_INFO_REQUIRED: ["ADDITIONAL_INFO_REQUIRED", "SUBMITTED", "PROCESSING", "MANUAL_REVIEW", "APPROVED", "REJECTED", "EXPIRED"],
+    APPROVED: ["APPROVED", "EXPIRED"], // Approved can only expire
+    REJECTED: ["REJECTED"], // Terminal
+    EXPIRED: ["EXPIRED"] // Terminal
+};
+
+export function validateStatusTransition(
+    from: string,
+    to: string
+): { valid: boolean; reason?: string } {
+    const fromKey = from as VerificationStatusValue;
+    const toKey = to as VerificationStatusValue;
+
+    const allowed = VERIFICATION_STATE_TRANSITIONS[fromKey];
+    if (!allowed) {
+        // Unknown source status — allow but let caller decide (defensive default)
+        return { valid: true };
+    }
+
+    if (!allowed.includes(toKey)) {
+        return {
+            valid: false,
+            reason: `Invalid status transition from '${from}' to '${to}'. Allowed next states: ${allowed.join(", ")}.`
+        };
+    }
+
+    return { valid: true };
+}
+
+// ─────────────────────────────────────────────────────
 // Record a status change in the immutable audit trail
 // ─────────────────────────────────────────────────────
 export async function recordStatusChange(params: {

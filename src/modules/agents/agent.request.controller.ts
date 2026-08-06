@@ -1,6 +1,12 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { sendSupplierConfirmedEmail } from "../../services/email.service";
+import { releaseReservation } from "../wallet/wallet.service";
+
+// Trade request states in which wallet funds are reserved (held). Used to
+// decide whether rejecting a request should release a held reservation.
+const RESERVED_STATES = ["PENDING", "POOL", "ASSIGNED", "QUOTED"] as const;
+
 
 /**
  * Get trade requests: either assigned to agent or in the global pool
@@ -31,7 +37,7 @@ export async function getAgentTradeRequests(req: Request, res: Response) {
         } else {
             where.OR = [
                 { agentId, status: statusQuery },
-                { status: "POOL" } 
+                { status: "POOL" }
             ];
         }
 
@@ -58,7 +64,7 @@ export async function getAgentTradeRequests(req: Request, res: Response) {
         const formatted = requests.map((r: any) => {
             const customer = r.customer || {};
             const fullName = customer.fullName || "";
-            
+
             return {
                 ...r,
                 amount: r.amount ? r.amount.toString() : "0",
@@ -100,7 +106,7 @@ export async function claimTradeRequest(req: Request, res: Response) {
 
         const updated = await prisma.tradeRequest.update({
             where: { id },
-            data: { 
+            data: {
                 agentId,
                 status: "PENDING" // Move to pending for this specific agent
             }
@@ -130,16 +136,37 @@ export async function rejectTradeRequest(req: Request, res: Response) {
             return res.status(404).json({ error: "Trade request not found" });
         }
 
-        const updated = await prisma.tradeRequest.update({
-            where: { id },
-            data: { status: "REJECTED" }
+        // Rejecting releases any held wallet funds back to available, atomically
+        // with the status change so the ledger never drifts from the request.
+        const updated = await prisma.$transaction(async (tx) => {
+            const u = await tx.tradeRequest.update({
+                where: { id },
+                data: { status: "REJECTED" }
+            });
+
+            if ((RESERVED_STATES as readonly string[]).includes(request.status)) {
+                await releaseReservation(
+                    request.customerId,
+                    Number(request.amount),
+                    {
+                        description: `Funds released after agent rejected trade request ${request.id.slice(0, 8).toUpperCase()}`,
+                        tradeRequestId: request.id,
+                        actorId: agentId,
+                    },
+                    tx
+                );
+            }
+
+            return u;
         });
 
         res.json(updated);
     } catch (error) {
+        console.error("Error rejecting trade request:", error);
         res.status(500).json({ error: "Failed to reject request" });
     }
 }
+
 
 /**
  * Set a rate for a trade request (Quote)
@@ -156,8 +183,8 @@ export async function setTradeRequestRate(req: Request, res: Response) {
         }
 
         const request = await prisma.tradeRequest.findFirst({
-            where: { 
-                id, 
+            where: {
+                id,
                 OR: [
                     { agentId },
                     { status: "POOL" }
@@ -171,7 +198,7 @@ export async function setTradeRequestRate(req: Request, res: Response) {
 
         const updated = await (prisma.tradeRequest as any).update({
             where: { id },
-            data: { 
+            data: {
                 agentId,
                 fxRate,
                 payoutAmount,
@@ -189,8 +216,8 @@ export async function setTradeRequestRate(req: Request, res: Response) {
             const adminEmails = admins.map((a: any) => a.email).filter((e: any): e is string => !!e);
 
             const customerEmail = updated.customer?.email || updated.customer?.user?.email;
-            const customerName  = updated.customer?.fullName || "Customer";
-            const tradeRef      = updated.id.slice(0, 8).toUpperCase();
+            const customerName = updated.customer?.fullName || "Customer";
+            const tradeRef = updated.id.slice(0, 8).toUpperCase();
 
             if (customerEmail) {
                 await sendSupplierConfirmedEmail({

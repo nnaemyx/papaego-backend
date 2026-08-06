@@ -2,6 +2,16 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { createNotification } from "../notifications/notification.service";
 import { sendPaymentDetailsEmail, sendRateQuotedEmail } from "../../services/email.service";
+import { releaseReservation, settleReservation } from "../wallet/wallet.service";
+
+// Trade request states in which wallet funds are reserved (held) but not yet
+// settled. Reserve happens when a request leaves DRAFT; settle happens on
+// process; release happens on reject/cancel. DRAFT never holds a reservation.
+const RESERVED_STATES = ["PENDING", "POOL", "ASSIGNED", "QUOTED"] as const;
+function isReserved(status: string) {
+    return (RESERVED_STATES as readonly string[]).includes(status);
+}
+
 
 /**
  * GET /api/admin/trade-requests
@@ -110,11 +120,11 @@ export async function getAdminTradeRequests(req: Request, res: Response) {
             },
             assignedAgent: r.agent
                 ? {
-                      id: r.agent.id,
-                      firstName: r.agent.firstName || "",
-                      lastName: r.agent.lastName || "",
-                      email: r.agent.email || "",
-                  }
+                    id: r.agent.id,
+                    firstName: r.agent.firstName || "",
+                    lastName: r.agent.lastName || "",
+                    email: r.agent.email || "",
+                }
                 : null,
             supplierDetails: {
                 businessName: r.supplierBusinessName,
@@ -231,9 +241,28 @@ export async function rejectTradeRequest(req: Request, res: Response) {
         const request = await prisma.tradeRequest.findUnique({ where: { id } });
         if (!request) return res.status(404).json({ error: "Trade request not found" });
 
-        const updated = await prisma.tradeRequest.update({
-            where: { id },
-            data: { status: "REJECTED" },
+        // Reject releases any held funds back to the customer's available balance
+        // atomically with the status change.
+        const updated = await prisma.$transaction(async (tx) => {
+            const u = await tx.tradeRequest.update({
+                where: { id },
+                data: { status: "REJECTED" },
+            });
+
+            if (isReserved(request.status)) {
+                await releaseReservation(
+                    request.customerId,
+                    Number(request.amount),
+                    {
+                        description: `Funds released after rejecting trade request ${request.id.slice(0, 8).toUpperCase()}`,
+                        tradeRequestId: request.id,
+                        actorId: (req as any).user.id,
+                    },
+                    tx
+                );
+            }
+
+            return u;
         });
 
         // Notify customer
@@ -242,6 +271,7 @@ export async function rejectTradeRequest(req: Request, res: Response) {
             await createNotification(
                 customer.userId,
                 "Trade Request Rejected",
+
                 `Your trade request for ${request.amount} ${request.sendCurrency} has been rejected.${reason ? " Reason: " + reason : ""}`,
                 "ERROR"
             );
@@ -310,11 +340,29 @@ export async function processTradeRequest(req: Request, res: Response) {
             } as any,
         });
 
-        // Mark request as processed
-        await prisma.tradeRequest.update({
-            where: { id },
-            data: { status: "PROCESSED" },
+        // Mark request as processed and settle the reservation: the held funds
+        // now permanently leave the wallet (outbound settlement to the supplier).
+        await prisma.$transaction(async (tx) => {
+            await tx.tradeRequest.update({
+                where: { id },
+                data: { status: "PROCESSED" },
+            });
+
+            if (isReserved(request.status)) {
+                await settleReservation(
+                    request.customerId,
+                    Number(request.amount),
+                    {
+                        description: `Funds settled for processed trade ${trade.id.slice(0, 8).toUpperCase()}`,
+                        tradeRequestId: request.id,
+                        tradeId: trade.id,
+                        actorId: (req as any).user.id,
+                    },
+                    tx
+                );
+            }
         });
+
 
         // Notify customer
         if (request.customer?.userId) {
@@ -324,7 +372,7 @@ export async function processTradeRequest(req: Request, res: Response) {
                 `Your trade #${trade.id.slice(0, 8).toUpperCase()} has been processed. Payment details have been provided.`,
                 "SUCCESS"
             );
-            
+
             if (paymentAccountNumber && paymentAccountName && paymentBankName) {
                 await sendPaymentDetailsEmail({
                     customerEmail: request.customer.email as string,
@@ -538,7 +586,7 @@ export async function setTradeRequestRate(req: Request, res: Response) {
                 `The exchange rate for your trade request has been set to 1 ${request.sendCurrency === 'NGN' ? request.receiveCurrency : request.sendCurrency} = ${fxRate} NGN.`,
                 "SUCCESS"
             );
-            
+
             await sendRateQuotedEmail({
                 customerEmail: request.customer.email as string,
                 customerName: request.customer.fullName as string,

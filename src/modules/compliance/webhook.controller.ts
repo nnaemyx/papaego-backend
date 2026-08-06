@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../../config/db";
 import { verifyWebhookSignature, FvApplicationResponse } from "./fvbank.adapter";
-import { recordStatusChange, mapFvBankStatus } from "./status.service";
+import { recordStatusChange, mapFvBankStatus, validateStatusTransition } from "./status.service";
 
 // ─────────────────────────────────────────────────────
 // Inbound webhook from FV Bank
@@ -25,105 +25,179 @@ export async function handleFvBankWebhook(req: Request, res: Response, next: Nex
             return res.status(400).json({ error: "Missing required webhook fields: event, applicationId, applicationType." });
         }
 
-        // 2. Store raw webhook for audit
+        // 2. Deduplicate: FV Bank may retry webhook delivery. Use a deterministic
+        // event key so the same event is never processed twice.
+        const eventKey: string = payload.eventId || payload.messageId ||
+            `${event}:${applicationType}:${applicationId}:${status || "PROCESSING"}`;
+
+        const alreadyProcessed = await prisma.complianceWebhook.findFirst({
+            where: {
+                processed: true,
+                payload: { path: ["_eventKey"], equals: eventKey } as any
+            }
+        });
+
+        if (alreadyProcessed) {
+            console.log(`ℹ️  Duplicate webhook ignored (idempotent): ${eventKey}`);
+            return res.status(200).json({ received: true, duplicate: true });
+        }
+
+        // 3. Store raw webhook for audit (tag with the dedup key)
         const webhook = await prisma.complianceWebhook.create({
             data: {
                 organizationId: partnerOrgId || null,
                 event,
-                payload,
+                payload: { ...payload, _eventKey: eventKey },
                 signature: signature || null
             }
         });
 
         const internalStatus = mapFvBankStatus(status || "PROCESSING");
 
-        // 3. Process based on application type
-        if (applicationType === "KYC") {
-            const kyc = await prisma.kycRequest.findFirst({
-                where: { fvBankApplicationId: applicationId }
-            });
+        try {
+            // 4. Process based on application type — atomically per entity
+            if (applicationType === "KYC") {
+                const kyc = await prisma.kycRequest.findFirst({
+                    where: { fvBankApplicationId: applicationId }
+                });
 
-            if (kyc) {
-                const previousStatus = kyc.status;
-                await prisma.kycRequest.update({
-                    where: { id: kyc.id },
-                    data: {
-                        status: internalStatus as any,
-                        rejectionReason: rejectionReason || null,
-                        additionalInfoNote: additionalInfoNote || null,
-                        reviewedAt: ["APPROVED", "REJECTED"].includes(internalStatus) ? new Date() : undefined,
-                        expiresAt: internalStatus === "EXPIRED" ? new Date() : undefined
+                if (kyc) {
+                    const previousStatus = kyc.status;
+
+                    // Enforce state-machine: block illegal regressions
+                    const transition = validateStatusTransition(previousStatus, internalStatus);
+                    if (!transition.valid) {
+                        console.warn(`⚠️  Blocked invalid KYC transition: ${transition.reason}`);
+                        await recordStatusChange({
+                            organizationId: kyc.organizationId,
+                            entityType: "KYC",
+                            fromStatus: previousStatus,
+                            toStatus: previousStatus,
+                            changedBy: "FV_BANK_WEBHOOK",
+                            kycRequestId: kyc.id,
+                            reason: `Ignored webhook: ${transition.reason}`,
+                            metadata: payload
+                        });
+                    } else {
+                        await prisma.$transaction(async (tx) => {
+                            await tx.kycRequest.update({
+                                where: { id: kyc.id },
+                                data: {
+                                    status: internalStatus as any,
+                                    rejectionReason: rejectionReason || null,
+                                    additionalInfoNote: additionalInfoNote || null,
+                                    reviewedAt: ["APPROVED", "REJECTED"].includes(internalStatus) ? new Date() : undefined,
+                                    expiresAt: internalStatus === "EXPIRED" ? new Date() : undefined
+                                }
+                            });
+
+                            await tx.verificationStatusHistory.create({
+                                data: {
+                                    organizationId: kyc.organizationId,
+                                    entityType: "KYC",
+                                    fromStatus: previousStatus,
+                                    toStatus: internalStatus,
+                                    changedBy: "FV_BANK_WEBHOOK",
+                                    kycRequestId: kyc.id,
+                                    reason: rejectionReason || additionalInfoNote || `FV Bank webhook: ${event}`,
+                                    metadata: payload as any
+                                }
+                            });
+                        });
+
+                        // Activate org if both KYC and KYB approved
+                        await checkAndActivateOrganization(kyc.organizationId, "FV_BANK_WEBHOOK");
+
+                        // Create in-app notification
+                        await createStatusNotification(kyc.userId, "KYC", internalStatus, rejectionReason, additionalInfoNote);
                     }
-                });
-
-                await recordStatusChange({
-                    organizationId: kyc.organizationId,
-                    entityType: "KYC",
-                    fromStatus: previousStatus,
-                    toStatus: internalStatus,
-                    changedBy: "FV_BANK_WEBHOOK",
-                    kycRequestId: kyc.id,
-                    reason: rejectionReason || additionalInfoNote || `FV Bank webhook: ${event}`,
-                    metadata: payload
-                });
-
-                // Activate org if both KYC and KYB approved
-                await checkAndActivateOrganization(kyc.organizationId, "FV_BANK_WEBHOOK");
-
-                // Create in-app notification
-                await createStatusNotification(kyc.userId, "KYC", internalStatus, rejectionReason, additionalInfoNote);
-            } else {
-                console.warn(`⚠️  KYC application not found for FV Bank ID: ${applicationId}`);
-            }
-        } else if (applicationType === "KYB") {
-            const kyb = await prisma.kybRequest.findFirst({
-                where: { fvBankApplicationId: applicationId }
-            });
-
-            if (kyb) {
-                const previousStatus = kyb.status;
-                await prisma.kybRequest.update({
-                    where: { id: kyb.id },
-                    data: {
-                        status: internalStatus as any,
-                        rejectionReason: rejectionReason || null,
-                        additionalInfoNote: additionalInfoNote || null,
-                        reviewedAt: ["APPROVED", "REJECTED"].includes(internalStatus) ? new Date() : undefined,
-                        expiresAt: internalStatus === "EXPIRED" ? new Date() : undefined
-                    }
-                });
-
-                await recordStatusChange({
-                    organizationId: kyb.organizationId,
-                    entityType: "KYB",
-                    fromStatus: previousStatus,
-                    toStatus: internalStatus,
-                    changedBy: "FV_BANK_WEBHOOK",
-                    kybRequestId: kyb.id,
-                    reason: rejectionReason || additionalInfoNote || `FV Bank webhook: ${event}`,
-                    metadata: payload
-                });
-
-                // Activate org if both KYC and KYB approved
-                await checkAndActivateOrganization(kyb.organizationId, "FV_BANK_WEBHOOK");
-
-                // Notify org owner
-                const org = await prisma.organization.findUnique({ where: { id: kyb.organizationId } });
-                if (org) {
-                    await createStatusNotification(org.ownerId, "KYB", internalStatus, rejectionReason, additionalInfoNote);
+                } else {
+                    console.warn(`⚠️  KYC application not found for FV Bank ID: ${applicationId}`);
                 }
-            } else {
-                console.warn(`⚠️  KYB application not found for FV Bank ID: ${applicationId}`);
+            } else if (applicationType === "KYB") {
+                const kyb = await prisma.kybRequest.findFirst({
+                    where: { fvBankApplicationId: applicationId }
+                });
+
+                if (kyb) {
+                    const previousStatus = kyb.status;
+
+                    const transition = validateStatusTransition(previousStatus, internalStatus);
+                    if (!transition.valid) {
+                        console.warn(`⚠️  Blocked invalid KYB transition: ${transition.reason}`);
+                        await recordStatusChange({
+                            organizationId: kyb.organizationId,
+                            entityType: "KYB",
+                            fromStatus: previousStatus,
+                            toStatus: previousStatus,
+                            changedBy: "FV_BANK_WEBHOOK",
+                            kybRequestId: kyb.id,
+                            reason: `Ignored webhook: ${transition.reason}`,
+                            metadata: payload
+                        });
+                    } else {
+                        await prisma.$transaction(async (tx) => {
+                            await tx.kybRequest.update({
+                                where: { id: kyb.id },
+                                data: {
+                                    status: internalStatus as any,
+                                    rejectionReason: rejectionReason || null,
+                                    additionalInfoNote: additionalInfoNote || null,
+                                    reviewedAt: ["APPROVED", "REJECTED"].includes(internalStatus) ? new Date() : undefined,
+                                    expiresAt: internalStatus === "EXPIRED" ? new Date() : undefined
+                                }
+                            });
+
+                            await tx.verificationStatusHistory.create({
+                                data: {
+                                    organizationId: kyb.organizationId,
+                                    entityType: "KYB",
+                                    fromStatus: previousStatus,
+                                    toStatus: internalStatus,
+                                    changedBy: "FV_BANK_WEBHOOK",
+                                    kybRequestId: kyb.id,
+                                    reason: rejectionReason || additionalInfoNote || `FV Bank webhook: ${event}`,
+                                    metadata: payload as any
+                                }
+                            });
+                        });
+
+                        // Activate org if both KYC and KYB approved
+                        await checkAndActivateOrganization(kyb.organizationId, "FV_BANK_WEBHOOK");
+
+                        // Notify org owner
+                        const org = await prisma.organization.findUnique({ where: { id: kyb.organizationId } });
+                        if (org) {
+                            await createStatusNotification(org.ownerId, "KYB", internalStatus, rejectionReason, additionalInfoNote);
+                        }
+                    }
+                } else {
+                    console.warn(`⚠️  KYB application not found for FV Bank ID: ${applicationId}`);
+                }
             }
+
+            // 5. Mark webhook as processed
+            await prisma.complianceWebhook.update({
+                where: { id: webhook.id },
+                data: { processed: true, processedAt: new Date() }
+            });
+
+            res.status(200).json({ received: true });
+        } catch (processErr: any) {
+            // Record the failure on the webhook so it can be retried/inspected
+            console.error("❌ Webhook processing failed:", processErr.message);
+            await prisma.complianceWebhook.update({
+                where: { id: webhook.id },
+                data: {
+                    processed: false,
+                    errorMessage: processErr.message,
+                    retryCount: { increment: 1 }
+                }
+            }).catch(() => { /* swallow */ });
+
+            // Acknowledge receipt (avoid infinite FV Bank retries) but flag internally
+            return res.status(200).json({ received: true, processingError: true });
         }
-
-        // 4. Mark webhook as processed
-        await prisma.complianceWebhook.update({
-            where: { id: webhook.id },
-            data: { processed: true, processedAt: new Date() }
-        });
-
-        res.status(200).json({ received: true });
     } catch (error: any) {
         console.error("❌ Webhook processing error:", error.message);
         next(error);

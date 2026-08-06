@@ -124,17 +124,17 @@ enum WebhookEvent {
 // ---------- CORE ----------
 
 model User {
-  id        String   @id @default(uuid())
-  role      Role
-  email     String?  @unique
-  phone     String
-  password  String
-  firstName String?
-  lastName  String?
-  isActive              Boolean   @default(true)
-  resetPasswordToken    String?
-  resetPasswordExpires  DateTime?
-  createdAt             DateTime  @default(now())
+  id                   String    @id @default(uuid())
+  role                 Role
+  email                String?   @unique
+  phone                String
+  password             String
+  firstName            String?
+  lastName             String?
+  isActive             Boolean   @default(true)
+  resetPasswordToken   String?
+  resetPasswordExpires DateTime?
+  createdAt            DateTime  @default(now())
 
   agentProfile       AgentProfile?
   customer           Customer?
@@ -197,28 +197,28 @@ model AgentProfile {
 // ---------- CUSTOMERS ----------
 
 model Customer {
-  id                String    @id @default(uuid())
-  userId            String    @unique
-  bvn               String
-  fullName          String
-  bankName          String?
-  accountNo         String?
-  email             String?
-  phone             String?
-  gender            String?
-  dateOfBirth       DateTime?
-  homeAddress       String?
-  nin               String?
-  companyName       String?
-  companySector     String?
-  governmentIdUrl   String?
-  proofOfAddressUrl String?
-  verified          Boolean   @default(false)
-  kycStatus         KycStatus @default(NOT_SUBMITTED)
+  id                 String    @id @default(uuid())
+  userId             String    @unique
+  bvn                String
+  fullName           String
+  bankName           String?
+  accountNo          String?
+  email              String?
+  phone              String?
+  gender             String?
+  dateOfBirth        DateTime?
+  homeAddress        String?
+  nin                String?
+  companyName        String?
+  companySector      String?
+  governmentIdUrl    String?
+  proofOfAddressUrl  String?
+  verified           Boolean   @default(false)
+  kycStatus          KycStatus @default(NOT_SUBMITTED)
   kycRejectionReason String?
-  kycReviewedAt     DateTime?
-  kycReviewedBy     String?
-  createdAt         DateTime  @default(now())
+  kycReviewedAt      DateTime?
+  kycReviewedBy      String?
+  createdAt          DateTime  @default(now())
 
   // Referral attribution (no FK — agent may be deleted later)
   referringAgentId String?
@@ -235,6 +235,10 @@ model Customer {
   adminSupplierLinks AdminSupplierCustomer[]
   agentRatings       AgentRating[]
   feedbacks          CustomerFeedback[]
+
+  // Wallet (ledger balance) relations
+  wallet          CustomerWallet?
+  depositRequests DepositRequest[]
 
   @@index([referringAgentId])
 }
@@ -279,9 +283,9 @@ model TradeRequest {
   quotedAt     DateTime?
 
   // Negotiation fields (Sprint 2)
-  negotiationUsed  Boolean   @default(false)
-  originalFxRate   Decimal?
-  negotiatedRate   Decimal?
+  negotiationUsed Boolean  @default(false)
+  originalFxRate  Decimal?
+  negotiatedRate  Decimal?
 
   customer     Customer      @relation(fields: [customerId], references: [id])
   agent        User?         @relation("AgentTradeRequests", fields: [agentId], references: [id])
@@ -340,7 +344,7 @@ model Trade {
   // Negotiation (one-time 0.05% discount per trade)
   originalFxRate  Decimal?
   negotiatedRate  Decimal?
-  negotiationUsed Boolean   @default(false)
+  negotiationUsed Boolean  @default(false)
 
   status    TradeStatus
   createdAt DateTime    @default(now())
@@ -362,7 +366,6 @@ model Trade {
 
   // Escrow / Admin Hold
   isCommissionFrozen Boolean @default(false)
-
 
   // Admin-managed fields
   tradeRequestId        String?
@@ -418,7 +421,7 @@ model AuditLog {
   entity    String
   entityId  String
   ip        String
-  metadata  Json?    // before/after for rate changes, negotiation details, etc.
+  metadata  Json? // before/after for rate changes, negotiation details, etc.
   createdAt DateTime @default(now())
 }
 
@@ -449,15 +452,15 @@ model SystemConfig {
 // ---------- RATE CHANGE AUDIT ----------
 
 model RateChangeLog {
-  id            String   @id @default(uuid())
-  pair          String
-  previousBuy   Decimal
-  previousSell  Decimal
-  newBuy        Decimal
-  newSell       Decimal
-  changedBy     String
-  reason        String?
-  createdAt     DateTime @default(now())
+  id           String   @id @default(uuid())
+  pair         String
+  previousBuy  Decimal
+  previousSell Decimal
+  newBuy       Decimal
+  newSell      Decimal
+  changedBy    String
+  reason       String?
+  createdAt    DateTime @default(now())
 
   @@index([pair])
   @@index([changedBy])
@@ -725,18 +728,18 @@ enum MarkupType {
 model TreasuryAccount {
   id          String        @id @default(uuid())
   accountName String
-  provider    String        // e.g. GTBank, Binance, OKX, Coinbase, MetaMask
-  currency    String        // Primary currency of the account
+  provider    String // e.g. GTBank, Binance, OKX, Coinbase, MetaMask
+  currency    String // Primary currency of the account
   accountType AccountType
   status      AccountStatus @default(ACTIVE)
-  metadata    Json?         // Additional provider-specific metadata (account number, address, etc.)
+  metadata    Json? // Additional provider-specific metadata (account number, address, etc.)
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
   balances      TreasuryBalance[]
   syncLogs      BalanceSyncLog[]
-  debitEntries  LedgerEntry[] @relation("DebitAccount")
-  creditEntries LedgerEntry[] @relation("CreditAccount")
+  debitEntries  LedgerEntry[]     @relation("DebitAccount")
+  creditEntries LedgerEntry[]     @relation("CreditAccount")
 
   @@index([currency])
   @@index([accountType])
@@ -764,12 +767,12 @@ model LedgerEntry {
   id              String          @id @default(uuid())
   reference       String          @unique @default(uuid())
   transactionType LedgerEntryType
-  debitAccountId  String?         // Account being debited (funds leave)
-  creditAccountId String?         // Account being credited (funds arrive)
+  debitAccountId  String? // Account being debited (funds leave)
+  creditAccountId String? // Account being credited (funds arrive)
   amount          Decimal
   currency        String
   description     String
-  metadata        Json?           // Extra context: trade ID, customer ID, sync ID, etc.
+  metadata        Json? // Extra context: trade ID, customer ID, sync ID, etc.
   createdAt       DateTime        @default(now())
 
   debitAccount  TreasuryAccount? @relation("DebitAccount", fields: [debitAccountId], references: [id])
@@ -806,7 +809,7 @@ model BalanceSyncLog {
 // Raw provider rates — append-only, never modified
 model ExchangeRateProvider {
   id            String   @id @default(uuid())
-  providerName  String   // e.g. Binance, OKX, exchangerate.host, Manual
+  providerName  String // e.g. Binance, OKX, exchangerate.host, Manual
   baseCurrency  String
   quoteCurrency String
   providerRate  Decimal
@@ -825,7 +828,7 @@ model ExchangeRateMarkup {
   markupType    MarkupType @default(FIXED)
   markupValue   Decimal    @default(0)
   isActive      Boolean    @default(true)
-  updatedBy     String?    // Admin user ID who last changed this
+  updatedBy     String? // Admin user ID who last changed this
   updatedAt     DateTime   @updatedAt
   createdAt     DateTime   @default(now())
 
@@ -843,7 +846,7 @@ model ExchangeRateLog {
   markupType    String
   markupApplied Decimal
   customerRate  Decimal
-  requestedBy   String?  // User ID or service name that requested the quote
+  requestedBy   String? // User ID or service name that requested the quote
   createdAt     DateTime @default(now())
 
   @@index([baseCurrency, quoteCurrency])
@@ -888,42 +891,42 @@ model CashoutRequest {
 // ---------- SPRINT 1: ORGANIZATIONS ----------
 
 model Organization {
-  id                     String             @id @default(uuid())
-  ownerId                String
-  businessName           String
-  businessType           String             // LLC, CORPORATION, SOLE_PROPRIETOR, PARTNERSHIP, NGO, OTHER
-  countryOfRegistration  String
-  registrationNumber     String?
-  industry               String
-  businessAddress        String
-  city                   String
-  state                  String?
-  postalCode             String?
-  country                String
-  contactEmail           String
-  contactPhone           String
-  website                String?
-  authorizedRepName      String
-  authorizedRepTitle     String
-  status                 OrganizationStatus @default(DRAFT)
-  createdAt              DateTime           @default(now())
-  updatedAt              DateTime           @updatedAt
+  id                    String             @id @default(uuid())
+  ownerId               String
+  businessName          String
+  businessType          String // LLC, CORPORATION, SOLE_PROPRIETOR, PARTNERSHIP, NGO, OTHER
+  countryOfRegistration String
+  registrationNumber    String?
+  industry              String
+  businessAddress       String
+  city                  String
+  state                 String?
+  postalCode            String?
+  country               String
+  contactEmail          String
+  contactPhone          String
+  website               String?
+  authorizedRepName     String
+  authorizedRepTitle    String
+  status                OrganizationStatus @default(DRAFT)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
 
-  owner              User                     @relation("OrgOwner", fields: [ownerId], references: [id])
-  members            OrganizationMember[]
-  qualification      QualificationAssessment?
-  kycRequests        KycRequest[]
-  kybRequest         KybRequest?
-  documents          VerificationDocument[]
-  statusHistory      VerificationStatusHistory[]
-  webhooks           ComplianceWebhook[]
+  owner         User                        @relation("OrgOwner", fields: [ownerId], references: [id])
+  members       OrganizationMember[]
+  qualification QualificationAssessment?
+  kycRequests   KycRequest[]
+  kybRequest    KybRequest?
+  documents     VerificationDocument[]
+  statusHistory VerificationStatusHistory[]
+  webhooks      ComplianceWebhook[]
 
   // Sprint 2: Managed Banking relations
-  bankAccount        BankAccount?
-  bankingProfile     BankingProfile?
-  bankEvents         BankAccountEvent[]
-  bankSyncLogs       BankAccountSyncLog[]
-  bankWebhooks       BankAccountWebhook[]
+  bankAccount    BankAccount?
+  bankingProfile BankingProfile?
+  bankEvents     BankAccountEvent[]
+  bankSyncLogs   BankAccountSyncLog[]
+  bankWebhooks   BankAccountWebhook[]
 
   @@index([ownerId])
   @@index([status])
@@ -947,19 +950,19 @@ model OrganizationMember {
 // ---------- SPRINT 1: QUALIFICATION ----------
 
 model QualificationAssessment {
-  id                       String              @id @default(uuid())
-  organizationId           String              @unique
+  id                       String                @id @default(uuid())
+  organizationId           String                @unique
   hasInternationalPayments Boolean
   expectedMonthlyVolume    Decimal?
-  supplierPaymentFrequency String?             // WEEKLY, MONTHLY, QUARTERLY, AD_HOC
-  countriesOfOperation     String[]            // ISO codes
+  supplierPaymentFrequency String? // WEEKLY, MONTHLY, QUARTERLY, AD_HOC
+  countriesOfOperation     String[] // ISO codes
   primaryUseCase           String?
   additionalContext        String?
   outcome                  QualificationOutcome?
   reviewNotes              String?
   reviewedAt               DateTime?
-  createdAt                DateTime            @default(now())
-  updatedAt                DateTime            @updatedAt
+  createdAt                DateTime              @default(now())
+  updatedAt                DateTime              @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -969,29 +972,29 @@ model QualificationAssessment {
 // ---------- SPRINT 1: KYC ----------
 
 model KycRequest {
-  id                 String           @id @default(uuid())
-  organizationId     String
-  userId             String
-  fvBankApplicationId String?         // ID returned by FV Bank after submission
-  fullName           String
-  dateOfBirth        DateTime
-  nationality        String
-  residentialAddress String
-  phone              String
-  email              String
-  idType             DocumentType
-  status             VerificationStatus @default(DRAFT)
-  rejectionReason    String?
-  additionalInfoNote String?
-  submittedAt        DateTime?
-  reviewedAt         DateTime?
-  expiresAt          DateTime?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  id                  String             @id @default(uuid())
+  organizationId      String
+  userId              String
+  fvBankApplicationId String? // ID returned by FV Bank after submission
+  fullName            String
+  dateOfBirth         DateTime
+  nationality         String
+  residentialAddress  String
+  phone               String
+  email               String
+  idType              DocumentType
+  status              VerificationStatus @default(DRAFT)
+  rejectionReason     String?
+  additionalInfoNote  String?
+  submittedAt         DateTime?
+  reviewedAt          DateTime?
+  expiresAt           DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
 
-  organization Organization          @relation(fields: [organizationId], references: [id])
-  user         User                  @relation("KycUser", fields: [userId], references: [id])
-  documents    VerificationDocument[] @relation("KycDocuments")
+  organization  Organization                @relation(fields: [organizationId], references: [id])
+  user          User                        @relation("KycUser", fields: [userId], references: [id])
+  documents     VerificationDocument[]      @relation("KycDocuments")
   statusHistory VerificationStatusHistory[] @relation("KycHistory")
 
   @@index([organizationId])
@@ -1003,27 +1006,27 @@ model KycRequest {
 // ---------- SPRINT 1: KYB ----------
 
 model KybRequest {
-  id                   String           @id @default(uuid())
-  organizationId       String           @unique
-  fvBankApplicationId  String?          // ID returned by FV Bank after submission
-  companyName          String
-  registrationNumber   String
+  id                     String             @id @default(uuid())
+  organizationId         String             @unique
+  fvBankApplicationId    String? // ID returned by FV Bank after submission
+  companyName            String
+  registrationNumber     String
   countryOfIncorporation String
-  businessAddress      String
-  taxIdentification    String?
-  directors            Json?            // Array of { name, role, dob, nationality, idDocUrl }
-  ubos                 Json?            // Array of { name, ownershipPct, nationality, dob }
-  status               VerificationStatus @default(DRAFT)
-  rejectionReason      String?
-  additionalInfoNote   String?
-  submittedAt          DateTime?
-  reviewedAt           DateTime?
-  expiresAt            DateTime?
-  createdAt            DateTime         @default(now())
-  updatedAt            DateTime         @updatedAt
+  businessAddress        String
+  taxIdentification      String?
+  directors              Json? // Array of { name, role, dob, nationality, idDocUrl }
+  ubos                   Json? // Array of { name, ownershipPct, nationality, dob }
+  status                 VerificationStatus @default(DRAFT)
+  rejectionReason        String?
+  additionalInfoNote     String?
+  submittedAt            DateTime?
+  reviewedAt             DateTime?
+  expiresAt              DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
 
-  organization  Organization           @relation(fields: [organizationId], references: [id])
-  documents     VerificationDocument[] @relation("KybDocuments")
+  organization  Organization                @relation(fields: [organizationId], references: [id])
+  documents     VerificationDocument[]      @relation("KybDocuments")
   statusHistory VerificationStatusHistory[] @relation("KybHistory")
 
   @@index([organizationId])
@@ -1043,8 +1046,8 @@ model VerificationDocument {
   fileName       String
   fileSize       Int
   mimeType       String
-  fvBankDocId    String?      // ID returned by FV Bank after document upload
-  uploadedBy     String       // userId
+  fvBankDocId    String? // ID returned by FV Bank after document upload
+  uploadedBy     String // userId
   createdAt      DateTime     @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id])
@@ -1059,17 +1062,17 @@ model VerificationDocument {
 // ---------- SPRINT 1: STATUS HISTORY ----------
 
 model VerificationStatusHistory {
-  id             String             @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   kycRequestId   String?
   kybRequestId   String?
-  entityType     String             // KYC | KYB | ORGANIZATION
+  entityType     String // KYC | KYB | ORGANIZATION
   fromStatus     String?
   toStatus       String
-  changedBy      String?            // userId or "SYSTEM" or "FV_BANK_WEBHOOK"
+  changedBy      String? // userId or "SYSTEM" or "FV_BANK_WEBHOOK"
   reason         String?
-  metadata       Json?              // Raw webhook payload or admin notes
-  createdAt      DateTime           @default(now())
+  metadata       Json? // Raw webhook payload or admin notes
+  createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id])
   kycRequest   KycRequest?  @relation("KycHistory", fields: [kycRequestId], references: [id])
@@ -1106,17 +1109,17 @@ model ComplianceWebhook {
 // ---------- SPRINT 1: NOTIFICATION LOG ----------
 
 model NotificationLog {
-  id           String   @id @default(uuid())
-  recipientId  String   // userId
-  channel      String   // EMAIL | IN_APP | PUSH
-  type         String   // KYC_STATUS_UPDATE | KYB_STATUS_UPDATE | QUALIFICATION_RESULT | etc.
+  id           String    @id @default(uuid())
+  recipientId  String // userId
+  channel      String // EMAIL | IN_APP | PUSH
+  type         String // KYC_STATUS_UPDATE | KYB_STATUS_UPDATE | QUALIFICATION_RESULT | etc.
   subject      String?
   content      String
   metadata     Json?
-  sent         Boolean  @default(false)
+  sent         Boolean   @default(false)
   sentAt       DateTime?
   errorMessage String?
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
 
   @@index([recipientId])
   @@index([type])
@@ -1182,16 +1185,16 @@ model BankAccount {
 // ---------- SPRINT 2: BANK ACCOUNT EVENTS ----------
 
 model BankAccountEvent {
-  id             String            @id @default(uuid())
+  id             String             @id @default(uuid())
   bankAccountId  String
   organizationId String
-  event          String            // e.g. ACCOUNT_CREATED, STATUS_CHANGE, WEBHOOK_RECEIVED, SYNC
-  source         String            // FV_BANK_WEBHOOK | SYSTEM | SYNC | ADMIN
+  event          String // e.g. ACCOUNT_CREATED, STATUS_CHANGE, WEBHOOK_RECEIVED, SYNC
+  source         String // FV_BANK_WEBHOOK | SYSTEM | SYNC | ADMIN
   statusFrom     BankAccountStatus?
   statusTo       BankAccountStatus?
   details        String?
   metadata       Json?
-  createdAt      DateTime          @default(now())
+  createdAt      DateTime           @default(now())
 
   bankAccount  BankAccount  @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -1205,18 +1208,18 @@ model BankAccountEvent {
 // ---------- SPRINT 2: BANKING PROFILES ----------
 
 model BankingProfile {
-  id                 String            @id @default(uuid())
-  organizationId     String            @unique
-  bankAccountId      String            @unique
-  bankName           String            @default("FV Bank")
-  accountHolder      String
-  maskedAccountNumber String           // e.g. "•••• 6789"
-  accountNumber      String            // Encrypted/Stored
-  routingNumber      String
-  currency           String            @default("USD")
-  status             BankAccountStatus @default(ACTIVE)
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
+  id                  String            @id @default(uuid())
+  organizationId      String            @unique
+  bankAccountId       String            @unique
+  bankName            String            @default("FV Bank")
+  accountHolder       String
+  maskedAccountNumber String // e.g. "•••• 6789"
+  accountNumber       String // Encrypted/Stored
+  routingNumber       String
+  currency            String            @default("USD")
+  status              BankAccountStatus @default(ACTIVE)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   bankAccount  BankAccount  @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
@@ -1233,7 +1236,7 @@ model BankAccountSyncLog {
   bankAccountId   String
   organizationId  String
   syncType        BankAccountSyncType @default(MANUAL)
-  status          String              // SUCCESS | FAILED | NO_CHANGE
+  status          String // SUCCESS | FAILED | NO_CHANGE
   changesDetected Json?
   errorMessage    String?
   createdAt       DateTime            @default(now())
@@ -1271,3 +1274,90 @@ model BankAccountWebhook {
   @@index([createdAt])
 }
 
+// ---------- CUSTOMER WALLET (LEDGER BALANCE) ENUMS ----------
+
+enum WalletTransactionType {
+  DEPOSIT // Approved deposit credits the wallet
+  TRADE_DEBIT // Funds spent when a trade is processed
+  TRADE_REFUND // Refund back to wallet (e.g. trade cancelled/rejected)
+  ADJUSTMENT // Manual admin correction
+  REVERSAL // Reversal of a prior entry
+}
+
+enum DepositStatus {
+  PENDING // Customer submitted, awaiting admin confirmation
+  UNDER_REVIEW // Admin is reviewing proof
+  APPROVED // Funds credited to wallet
+  REJECTED // Declined; no credit
+  CANCELLED // Customer cancelled before review
+}
+
+// One wallet per customer. Holds the authoritative ledger balance.
+// availableBalance = spendable now. reservedBalance = held for in-flight trades.
+model CustomerWallet {
+  id               String   @id @default(uuid())
+  customerId       String   @unique
+  currency         String   @default("NGN")
+  availableBalance Decimal  @default(0)
+  reservedBalance  Decimal  @default(0)
+  totalDeposited   Decimal  @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  customer     Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  transactions WalletTransaction[]
+
+  @@index([customerId])
+}
+
+// Immutable ledger of every wallet balance change. Never updated, never deleted.
+model WalletTransaction {
+  id               String                @id @default(uuid())
+  walletId         String
+  customerId       String
+  type             WalletTransactionType
+  amount           Decimal // Positive = credit, Negative = debit
+  currency         String                @default("NGN")
+  balanceAfter     Decimal // availableBalance snapshot after this entry
+  description      String
+  // Optional links to source records for traceability
+  depositRequestId String?
+  tradeId          String?
+  tradeRequestId   String?
+  actorId          String? // who caused it (admin/customer/SYSTEM)
+  metadata         Json?
+  createdAt        DateTime              @default(now())
+
+  wallet CustomerWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([walletId])
+  @@index([customerId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+// A customer-initiated request to fund their wallet. Requires admin approval.
+model DepositRequest {
+  id              String        @id @default(uuid())
+  customerId      String
+  amount          Decimal
+  currency        String        @default("NGN")
+  method          String        @default("BANK_TRANSFER") // BANK_TRANSFER | WIRE | ACH
+  reference       String        @unique @default(uuid()) // idempotency / customer-facing ref
+  depositBank     String? // Which treasury account the customer paid into
+  proofUrl        String? // Uploaded proof of payment
+  note            String? // Customer note
+  status          DepositStatus @default(PENDING)
+  reviewedBy      String? // admin userId
+  reviewedAt      DateTime?
+  rejectionReason String?
+  creditedAmount  Decimal? // Amount actually credited (may differ from requested)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+  @@index([status])
+  @@index([createdAt])
+}
