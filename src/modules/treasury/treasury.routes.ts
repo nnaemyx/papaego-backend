@@ -15,6 +15,7 @@ import {
     getAccounts,
     createAccount,
     updateAccount,
+    deleteAccount,
 } from "./treasury.controller";
 
 const router = Router();
@@ -42,6 +43,7 @@ router.get("/providers", getProviders);
 router.get("/accounts", getAccounts);
 router.post("/accounts", createAccount);
 router.patch("/accounts/:id", updateAccount);
+router.delete("/accounts/:id", deleteAccount);
 
 // ── Ledger alias (also accessible as /ledger/entries via main router) ─────────
 router.get("/entries", getLedger);

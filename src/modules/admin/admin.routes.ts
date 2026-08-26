@@ -75,14 +75,17 @@ import {
     updateKycStatus,
     updateKybStatus,
     updateOrganizationStatus,
-    adminProvisionBank
+    adminProvisionBank,
+    deleteOrganization
 } from "./admin.organizations.controller";
 import {
     getAdminDeposits,
     approveDeposit,
     rejectDeposit,
+    deleteDeposit,
 } from "../wallet/deposit.controller";
 import { getCustomerWalletForAdmin } from "../wallet/wallet.controller";
+import { deleteWalletTransaction } from "../customer/customer.controller";
 
 const router = Router();
 
@@ -176,12 +179,15 @@ router.post("/organizations/:id/kyc/status", updateKycStatus);
 router.post("/organizations/:id/kyb/status", updateKybStatus);
 router.post("/organizations/:id/status", updateOrganizationStatus);
 router.post("/organizations/:id/provision-bank", adminProvisionBank);
+router.delete("/organizations/:id", deleteOrganization);
 
 // ── Wallet & Deposits (Admin) ────────────────────────────────────────────────
 router.get("/deposits", getAdminDeposits);
 router.patch("/deposits/:id/approve", approveDeposit);
 router.patch("/deposits/:id/reject", rejectDeposit);
+router.delete("/deposits/:id", deleteDeposit);
 router.get("/customers/:customerId/wallet", getCustomerWalletForAdmin);
+router.delete("/wallet-transactions/:id", deleteWalletTransaction);
 
 export default router;
 

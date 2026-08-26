@@ -566,71 +566,75 @@ export async function exportCustomers(req: Request, res: Response) {
 
 // ---------------------- ADMIN CUSTOMER ACTIONS ----------------------
 
-// Safe/Soft Delete a customer
+// Permanent Cascading Delete a customer
 export async function deleteCustomer(req: Request, res: Response) {
     try {
         const { id } = req.params;
+        const adminId = (req as any).user?.id || "ADMIN";
 
         const customer = await prisma.customer.findUnique({
             where: { id },
-            include: { user: true, trades: true }
+            include: { user: true, wallet: true }
         });
 
         if (!customer) {
             return res.status(404).json({ error: "Customer not found" });
         }
 
-        const hasTrades = customer.trades.length > 0;
+        await prisma.$transaction(async (tx: any) => {
+            // Delete customer wallet transactions & wallet
+            if (customer.wallet) {
+                await tx.walletTransaction.deleteMany({ where: { walletId: customer.wallet.id } });
+                await tx.customerWallet.delete({ where: { id: customer.wallet.id } });
+            }
 
-        if (hasTrades) {
-            // Soft delete: restrict account, anonymize login so it's effectively "deleted" but trades remain
-            await prisma.user.update({
-                where: { id: customer.userId },
-                data: {
-                    isActive: false,
-                    email: `deleted_${Date.now()}_${customer.user.email || customer.email || id}`,
-                }
-            });
+            await Promise.all([
+                tx.depositRequest.deleteMany({ where: { customerId: id } }),
+                tx.customerFeedback.deleteMany({ where: { customerId: id } }),
+                tx.agentRating.deleteMany({ where: { customerId: id } }),
+                tx.adminSupplierCustomer.deleteMany({ where: { customerId: id } }),
+                tx.customerBankDetails.deleteMany({ where: { customerId: id } }),
+                tx.customerDocument.deleteMany({ where: { customerId: id } }),
+                tx.customerNote.deleteMany({ where: { customerId: id } }),
+            ]);
 
-            // Note: we're not touching the customer.email so the historical data still looks okayish, 
-            // but we freed up the User login email in case they want to sign up again.
+            // Cleanup Trade relations for this customer
+            const trades = await tx.trade.findMany({ where: { customerId: id }, select: { id: true } });
+            const tradeIds = trades.map((t: any) => t.id);
+            if (tradeIds.length > 0) {
+                await tx.tradeMessage.deleteMany({ where: { tradeId: { in: tradeIds } } });
+                await tx.trade.deleteMany({ where: { customerId: id } });
+            }
 
-            await prisma.auditLog.create({
-                data: {
-                    actorId: (req as any).user.id,
-                    role: "ADMIN",
-                    action: "CUSTOMER_SOFT_DELETED",
-                    entity: "Customer",
-                    entityId: id,
-                    ip: req.ip || "127.0.0.1"
-                }
-            });
-
-            return res.json({ success: true, message: "Customer soft-deleted successfully (retained trades)." });
-        } else {
-            // Hard delete: safe because there are no trades
-            await prisma.$transaction(async (tx: any) => {
-                await tx.customerNote.deleteMany({ where: { customerId: id } });
-                await tx.customerDocument.deleteMany({ where: { customerId: id } });
-                await tx.customerBankDetails.deleteMany({ where: { customerId: id } });
+            // Cleanup TradeRequest relations
+            const tradeRequests = await tx.tradeRequest.findMany({ where: { customerId: id }, select: { id: true } });
+            const requestIds = tradeRequests.map((r: any) => r.id);
+            if (requestIds.length > 0) {
+                await tx.tradeMessage.deleteMany({ where: { tradeRequestId: { in: requestIds } } });
                 await tx.tradeRequest.deleteMany({ where: { customerId: id } });
-                await tx.customer.delete({ where: { id } });
+            }
+
+            // Delete customer and user
+            await tx.customer.delete({ where: { id } });
+            if (customer.userId) {
+                await tx.notification.deleteMany({ where: { userId: customer.userId } });
                 await tx.user.delete({ where: { id: customer.userId } });
-            });
+            }
+        }, { maxWait: 20000, timeout: 30000 });
 
-            await prisma.auditLog.create({
-                data: {
-                    actorId: (req as any).user.id,
-                    role: "ADMIN",
-                    action: "CUSTOMER_HARD_DELETED",
-                    entity: "Customer",
-                    entityId: id,
-                    ip: req.ip || "127.0.0.1"
-                }
-            });
+        await prisma.auditLog.create({
+            data: {
+                actorId: adminId,
+                role: "ADMIN",
+                action: "CUSTOMER_DELETED",
+                entity: "Customer",
+                entityId: id,
+                ip: req.ip || "127.0.0.1",
+                metadata: { fullName: customer.fullName, email: customer.email }
+            }
+        });
 
-            return res.json({ success: true, message: "Customer strictly deleted." });
-        }
+        return res.json({ success: true, message: `Customer ${customer.fullName} and associated records deleted successfully.` });
     } catch (error) {
         console.error("Error deleting customer:", error);
         res.status(500).json({ error: "Failed to delete customer" });
@@ -713,5 +717,74 @@ export async function sendCustomerMessage(req: Request, res: Response) {
     } catch (error) {
         console.error("Error sending message to customer:", error);
         res.status(500).json({ error: "Failed to send message" });
+    }
+}
+
+/**
+ * DELETE /admin/wallet-transactions/:id
+ * Delete a customer wallet transaction / ledger entry.
+ */
+export async function deleteWalletTransaction(req: Request, res: Response) {
+    try {
+        const { id } = req.params;
+        const adminId = (req as any).user?.id || "ADMIN";
+
+        const tx = await prisma.walletTransaction.findUnique({
+            where: { id },
+            include: { wallet: true }
+        });
+        if (!tx) return res.status(404).json({ error: "Customer ledger entry not found" });
+
+        const wallet = tx.wallet;
+        if (wallet) {
+            const txAmount = Number(tx.amount || 0);
+            let newAvail = Number(wallet.availableBalance || 0);
+            let newTotalDep = Number(wallet.totalDeposited || 0);
+            let newReserved = Number(wallet.reservedBalance || 0);
+
+            if (tx.type === "DEPOSIT") {
+                newAvail = Math.max(0, newAvail - txAmount);
+                newTotalDep = Math.max(0, newTotalDep - txAmount);
+            } else if (tx.type === "TRADE_DEBIT") {
+                newAvail = newAvail + Math.abs(txAmount);
+            } else if (tx.type === "TRADE_REFUND") {
+                newAvail = Math.max(0, newAvail - Math.abs(txAmount));
+            } else if (tx.type === "ADJUSTMENT" || tx.type === "REVERSAL") {
+                if (txAmount > 0) {
+                    newAvail = Math.max(0, newAvail - txAmount);
+                    newTotalDep = Math.max(0, newTotalDep - txAmount);
+                } else {
+                    newAvail = newAvail + Math.abs(txAmount);
+                }
+            }
+
+            await prisma.customerWallet.update({
+                where: { id: wallet.id },
+                data: {
+                    availableBalance: newAvail,
+                    totalDeposited: newTotalDep,
+                    reservedBalance: newReserved,
+                }
+            });
+        }
+
+        await prisma.walletTransaction.delete({ where: { id } });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: adminId,
+                role: "ADMIN",
+                action: "CUSTOMER_LEDGER_ENTRY_DELETED",
+                entity: "WalletTransaction",
+                entityId: id,
+                ip: req.ip || "127.0.0.1",
+                metadata: { amount: tx.amount.toString(), type: tx.type, walletId: tx.walletId }
+            }
+        });
+
+        res.json({ success: true, message: "Customer ledger entry deleted and wallet balance updated successfully" });
+    } catch (err: any) {
+        console.error("Error deleting wallet transaction:", err);
+        res.status(500).json({ error: "Failed to delete customer ledger entry" });
     }
 }

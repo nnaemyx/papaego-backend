@@ -283,3 +283,42 @@ export async function rejectDeposit(req: Request, res: Response) {
         res.status(500).json({ error: "Failed to reject deposit" });
     }
 }
+
+/**
+ * DELETE /admin/deposits/:id
+ * Admin permanently deletes a deposit/funding event record.
+ */
+export async function deleteDeposit(req: Request, res: Response) {
+    try {
+        const { id } = req.params;
+        const adminId = (req as any).user?.id || "ADMIN";
+
+        const deposit = await prisma.depositRequest.findUnique({ where: { id } });
+        if (!deposit) return res.status(404).json({ error: "Deposit request not found" });
+
+        // Unlink or nullify any related wallet transactions depositRequestId
+        await prisma.walletTransaction.updateMany({
+            where: { depositRequestId: id },
+            data: { depositRequestId: null }
+        });
+
+        await prisma.depositRequest.delete({ where: { id } });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: adminId,
+                role: "ADMIN",
+                action: "DEPOSIT_DELETED",
+                entity: "DepositRequest",
+                entityId: id,
+                ip: req.ip || "127.0.0.1",
+                metadata: { reference: deposit.reference, amount: deposit.amount.toString() }
+            },
+        });
+
+        res.json({ success: true, message: "Funding event deleted successfully" });
+    } catch (error) {
+        console.error("Error deleting deposit:", error);
+        res.status(500).json({ error: "Failed to delete deposit event" });
+    }
+}

@@ -456,9 +456,11 @@ export async function getDashboardStats(req: Request, res: Response) {
         const inProgressTrades = allTrades.filter(t => inProgressStatuses.includes(t.status));
         const inProgressTradesSum = inProgressTrades.reduce((sum, t) => sum + Number(t.amount || 0), 0);
 
-        const totalTreasuryValue = treasuryTotal > 0 ? treasuryTotal : (tradeVolume > 0 ? tradeVolume : walletTotalDeposited);
-        const availableLiquidity = (treasuryAvailable + walletAvailable) > 0 ? (treasuryAvailable + walletAvailable) : walletAvailable;
+        // Treasury position strictly reflects Treasury accounts (0 if none configured)
+        const totalTreasuryValue = treasuryTotal;
+        const availableLiquidity = treasuryAvailable;
         const pendingSettlement = walletReserved > 0 ? walletReserved : inProgressTradesSum;
+        const customerLedgerBalance = walletAvailable + walletReserved;
 
         // --- Trade health breakdown (%) ---
         const completedStatuses = ["COMPLETED"];
@@ -526,6 +528,7 @@ export async function getDashboardStats(req: Request, res: Response) {
             totalTreasuryValue,
             availableLiquidity,
             pendingSettlement,
+            customerLedgerBalance,
             unmatchedDepositsCount: pendingDepositsCount,
             activeAgents,
             pendingReviews,

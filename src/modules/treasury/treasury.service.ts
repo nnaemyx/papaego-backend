@@ -430,18 +430,35 @@ export async function createTreasuryAccount(data: {
     provider: string;
     currency: string;
     accountType: string;
+    initialBalance?: number | string;
+    accountNumber?: string;
     metadata?: Record<string, unknown>;
 }) {
-    return prisma.treasuryAccount.create({
+    const account = await prisma.treasuryAccount.create({
         data: {
             accountName: data.accountName,
             provider: data.provider,
             currency: data.currency.toUpperCase(),
             accountType: data.accountType as any,
-            metadata: (data.metadata ?? undefined) as any,
+            metadata: {
+                ...(data.metadata || {}),
+                accountNumber: data.accountNumber || undefined
+            } as any,
         },
         include: { balances: true },
     });
+
+    const initBal = Number(data.initialBalance) || 0;
+    const balance = await prisma.treasuryBalance.create({
+        data: {
+            accountId: account.id,
+            currency: account.currency,
+            availableBalance: new Decimal(initBal),
+            reservedBalance: new Decimal(0),
+        }
+    });
+
+    return { ...account, balances: [balance] };
 }
 
 export async function updateTreasuryAccount(
@@ -458,6 +475,24 @@ export async function updateTreasuryAccount(
         data: { ...data, metadata: data.metadata as any },
         include: { balances: true },
     });
+}
+
+export async function deleteTreasuryAccount(id: string) {
+    // Delete associated balances and sync logs first
+    await prisma.treasuryBalance.deleteMany({ where: { accountId: id } });
+    await prisma.balanceSyncLog.deleteMany({ where: { accountId: id } });
+    
+    // Nullify debit/credit account references in ledger entries
+    await prisma.ledgerEntry.updateMany({
+        where: { debitAccountId: id },
+        data: { debitAccountId: null }
+    });
+    await prisma.ledgerEntry.updateMany({
+        where: { creditAccountId: id },
+        data: { creditAccountId: null }
+    });
+
+    return prisma.treasuryAccount.delete({ where: { id } });
 }
 
 // ─── Sync Logs ────────────────────────────────────────────────────────────────

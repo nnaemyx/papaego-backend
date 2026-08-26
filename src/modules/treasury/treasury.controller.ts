@@ -237,11 +237,19 @@ export async function getAccounts(req: Request, res: Response) {
  */
 export async function createAccount(req: Request, res: Response) {
     try {
-        const { accountName, provider, currency, accountType, metadata } = req.body;
+        const { accountName, provider, currency, accountType, initialBalance, accountNumber, metadata } = req.body;
         if (!accountName || !provider || !currency || !accountType) {
             return res.status(400).json({ error: "accountName, provider, currency, and accountType are required" });
         }
-        const account = await createTreasuryAccount({ accountName, provider, currency, accountType, metadata });
+        const account = await createTreasuryAccount({
+            accountName,
+            provider,
+            currency,
+            accountType,
+            initialBalance,
+            accountNumber,
+            metadata
+        });
         res.status(201).json({ account });
     } catch (err: any) {
         res.status(400).json({ error: err.message });
@@ -258,6 +266,21 @@ export async function updateAccount(req: Request, res: Response) {
         const { accountName, provider, status, metadata } = req.body;
         const account = await updateTreasuryAccount(id, { accountName, provider, status, metadata });
         res.json({ account });
+    } catch (err: any) {
+        res.status(400).json({ error: err.message });
+    }
+}
+
+/**
+ * DELETE /treasury/accounts/:id
+ * Delete a treasury account and its balances.
+ */
+export async function deleteAccount(req: Request, res: Response) {
+    try {
+        const { id } = req.params;
+        const { deleteTreasuryAccount } = await import("./treasury.service");
+        await deleteTreasuryAccount(id);
+        res.json({ success: true, message: "Treasury account deleted successfully" });
     } catch (err: any) {
         res.status(400).json({ error: err.message });
     }

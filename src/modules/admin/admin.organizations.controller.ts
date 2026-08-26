@@ -310,3 +310,53 @@ export async function adminProvisionBank(req: Request, res: Response, next: Next
         res.status(400).json({ error: error.message });
     }
 }
+
+// ─────────────────────────────────────────────────────
+// DELETE /admin/organizations/:id
+// Admin delete business organization and all related onboarding records
+// ─────────────────────────────────────────────────────
+export async function deleteOrganization(req: Request, res: Response, next: NextFunction) {
+    try {
+        const { id } = req.params;
+        const adminId = (req as any).user?.id || "ADMIN";
+
+        const org = await prisma.organization.findUnique({ where: { id } });
+        if (!org) {
+            return res.status(404).json({ error: "Organization not found." });
+        }
+
+        await prisma.$transaction(async (tx: any) => {
+            await Promise.all([
+                tx.bankAccountWebhook.deleteMany({ where: { organizationId: id } }),
+                tx.bankAccountSyncLog.deleteMany({ where: { organizationId: id } }),
+                tx.bankAccountEvent.deleteMany({ where: { organizationId: id } }),
+                tx.bankingProfile.deleteMany({ where: { organizationId: id } }),
+                tx.complianceWebhook.deleteMany({ where: { organizationId: id } }),
+                tx.verificationStatusHistory.deleteMany({ where: { organizationId: id } }),
+                tx.verificationDocument.deleteMany({ where: { organizationId: id } }),
+                tx.kybRequest.deleteMany({ where: { organizationId: id } }),
+                tx.kycRequest.deleteMany({ where: { organizationId: id } }),
+                tx.qualificationAssessment.deleteMany({ where: { organizationId: id } }),
+                tx.organizationMember.deleteMany({ where: { organizationId: id } }),
+            ]);
+            await tx.bankAccount.deleteMany({ where: { organizationId: id } });
+            await tx.organization.delete({ where: { id } });
+        }, { maxWait: 20000, timeout: 30000 });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: adminId,
+                role: "ADMIN",
+                action: "ORGANIZATION_DELETED",
+                entity: "Organization",
+                entityId: id,
+                ip: req.ip || "127.0.0.1",
+                metadata: { businessName: org.businessName, contactEmail: org.contactEmail }
+            }
+        });
+
+        res.json({ success: true, message: `Organization "${org.businessName}" deleted successfully.` });
+    } catch (error) {
+        next(error);
+    }
+}
