@@ -186,18 +186,41 @@ export async function getVerificationStatus(
 // ─────────────────────────────────────────────────────
 export function verifyWebhookSignature(rawBody: string, signature: string): boolean {
     const secret = process.env.FV_BANK_WEBHOOK_SECRET;
+    const isProd = process.env.NODE_ENV === "production";
+
     if (!secret) {
-        console.warn("⚠️  FV_BANK_WEBHOOK_SECRET not set — skipping webhook signature verification.");
-        return true; // Allow in dev/stub mode
+        // In production a missing secret is a misconfiguration — fail closed.
+        if (isProd) {
+            console.error("❌ FV_BANK_WEBHOOK_SECRET is not set in production. Rejecting compliance webhook.");
+            return false;
+        }
+        console.warn("⚠️  FV_BANK_WEBHOOK_SECRET not set — skipping webhook signature verification (dev/stub mode).");
+        return true;
     }
 
-    const expectedSig = crypto
-        .createHmac("sha256", secret)
-        .update(rawBody)
-        .digest("hex");
+    // A secret is configured, so a signature is now mandatory in every environment.
+    if (!signature) {
+        console.error("❌ Missing compliance webhook signature while FV_BANK_WEBHOOK_SECRET is configured.");
+        return false;
+    }
 
-    return crypto.timingSafeEqual(
-        Buffer.from(signature),
-        Buffer.from(`sha256=${expectedSig}`)
-    );
+    try {
+        const expectedSig = crypto
+            .createHmac("sha256", secret)
+            .update(rawBody)
+            .digest("hex");
+
+        const sigBuffer = Buffer.from(signature);
+        const expectedBuffer = Buffer.from(`sha256=${expectedSig}`);
+
+        // timingSafeEqual throws on length mismatch — guard first.
+        if (sigBuffer.length !== expectedBuffer.length) {
+            return false;
+        }
+
+        return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+    } catch {
+        return false;
+    }
 }
+

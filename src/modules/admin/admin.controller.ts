@@ -420,31 +420,53 @@ export async function approveOverride(req: Request, res: Response) {
 // Dashboard Statistics
 export async function getDashboardStats(req: Request, res: Response) {
     try {
-        // --- Basic counts ---
-        const [totalTransactions, activeAgents] = await Promise.all([
-            prisma.trade.count(),
-            prisma.user.count({ where: { role: "AGENT", isActive: true } }),
-        ]);
-
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
 
-        // --- All trades (lightweight) ---
-        const allTrades = await prisma.trade.findMany({
-            select: { id: true, status: true, amount: true, sendCurrency: true, createdAt: true },
-        });
+        // --- Basic counts & treasury data ---
+        const [
+            totalTransactions,
+            activeAgents,
+            allTrades,
+            treasuryBalances,
+            customerWallets,
+            pendingDepositsCount
+        ] = await Promise.all([
+            prisma.trade.count(),
+            prisma.user.count({ where: { role: "AGENT", isActive: true } }),
+            prisma.trade.findMany({
+                select: { id: true, status: true, amount: true, sendCurrency: true, createdAt: true },
+            }),
+            prisma.treasuryBalance.findMany(),
+            prisma.customerWallet.findMany(),
+            prisma.depositRequest.count({ where: { status: "PENDING" } }),
+        ]);
 
         const total = allTrades.length || 1; // avoid /0
-        const tradeVolume = allTrades.reduce((sum, t) => sum + Number(t.amount), 0);
+        const tradeVolume = allTrades.reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+        // Calculate real available liquidity & treasury values from treasury balances and customer wallets
+        const treasuryTotal = treasuryBalances.reduce((sum, b) => sum + Number(b.totalBalance || 0), 0);
+        const treasuryAvailable = treasuryBalances.reduce((sum, b) => sum + Number(b.availableBalance || 0), 0);
+        const walletAvailable = customerWallets.reduce((sum, w) => sum + Number(w.availableBalance || 0), 0);
+        const walletReserved = customerWallets.reduce((sum, w) => sum + Number(w.reservedBalance || 0), 0);
+        const walletTotalDeposited = customerWallets.reduce((sum, w) => sum + Number(w.totalDeposited || 0), 0);
+
+        const inProgressStatuses = ["AWAITING_PAYMENT", "PAYMENT_UPLOADED", "PAYMENT_CONFIRMED", "CUSTOMER_CONFIRMED", "SENT_TO_CUSTOMER", "CUSTOMER_VERIFIED", "PROCESSING", "PROCESSED"];
+        const inProgressTrades = allTrades.filter(t => inProgressStatuses.includes(t.status));
+        const inProgressTradesSum = inProgressTrades.reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+        const totalTreasuryValue = treasuryTotal > 0 ? treasuryTotal : (tradeVolume > 0 ? tradeVolume : walletTotalDeposited);
+        const availableLiquidity = (treasuryAvailable + walletAvailable) > 0 ? (treasuryAvailable + walletAvailable) : walletAvailable;
+        const pendingSettlement = walletReserved > 0 ? walletReserved : inProgressTradesSum;
 
         // --- Trade health breakdown (%) ---
         const completedStatuses = ["COMPLETED"];
-        const inProgressStatuses = ["AWAITING_PAYMENT", "PAYMENT_UPLOADED", "PAYMENT_CONFIRMED", "CUSTOMER_CONFIRMED", "SENT_TO_CUSTOMER", "CUSTOMER_VERIFIED"];
         const pendingStatuses = ["INITIATED", "QUOTED", "REQUESTED"];
         const failedStatuses = ["CANCELLED", "EXPIRED", "FLAGGED", "UNDER_REVIEW"];
 
         const completedCount = allTrades.filter(t => completedStatuses.includes(t.status)).length;
-        const inProgressCount = allTrades.filter(t => inProgressStatuses.includes(t.status)).length;
+        const inProgressCount = inProgressTrades.length;
         const pendingCount = allTrades.filter(t => pendingStatuses.includes(t.status)).length;
         const failedCount = allTrades.filter(t => failedStatuses.includes(t.status)).length;
 
@@ -482,15 +504,12 @@ export async function getDashboardStats(req: Request, res: Response) {
         };
 
         // --- Financial performance ---
-        // Most traded send currency
         const currencyCount: Record<string, number> = {};
         allTrades.forEach(t => {
             currencyCount[t.sendCurrency] = (currencyCount[t.sendCurrency] || 0) + 1;
         });
-        const mostTradedCurrency = Object.entries(currencyCount).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "N/A";
+        const mostTradedCurrency = Object.entries(currencyCount).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "NGN";
 
-        // Avg days to complete (from createdAt, for completed trades — proxy since we don't store completedAt)
-        // We look at how old completed trades are on average
         const completedTrades = allTrades.filter(t => t.status === "COMPLETED");
         let avgProcessingMinutes = 0;
         if (completedTrades.length > 0) {
@@ -499,11 +518,15 @@ export async function getDashboardStats(req: Request, res: Response) {
             avgProcessingMinutes = Math.round(totalMs / completedTrades.length / 60_000);
         }
 
-        const pendingReviews = flaggedTodayCount; // consistent with existing UI usage
+        const pendingReviews = flaggedTodayCount;
 
         res.json({
             totalTransactions,
             tradeVolume,
+            totalTreasuryValue,
+            availableLiquidity,
+            pendingSettlement,
+            unmatchedDepositsCount: pendingDepositsCount,
             activeAgents,
             pendingReviews,
             tradeHealth,

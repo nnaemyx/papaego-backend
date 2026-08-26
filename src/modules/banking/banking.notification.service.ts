@@ -12,8 +12,10 @@ import prisma from "../../config/db";
 import {
     sendProvisioningPendingEmail,
     sendProvisioningSuccessEmail,
-    sendProvisioningFailedOpsEmail
+    sendProvisioningFailedOpsEmail,
+    sendAccountStatusChangeEmail
 } from "../../services/email.service";
+
 
 /**
  * 1. Notify customer when provisioning is PENDING
@@ -176,3 +178,71 @@ export async function notifyProvisioningFailed({
         console.error("❌ Error in notifyProvisioningFailed:", err.message);
     }
 }
+
+/**
+ * 4. Notify customer when a live account status change is received from
+ *    FV Bank (webhook or sync): SUSPENDED, FROZEN, CLOSED, RESTRICTED, or
+ *    re-ACTIVATED. Best-effort — never throws (called from webhook/sync path).
+ */
+export async function notifyAccountStatusChange({
+    organizationId,
+    userId,
+    companyName,
+    recipientEmail,
+    previousStatus,
+    currentStatus,
+    reason
+}: {
+    organizationId: string;
+    userId: string;
+    companyName: string;
+    recipientEmail?: string | null;
+    previousStatus: string;
+    currentStatus: string;
+    reason?: string;
+}) {
+    try {
+        const isPositive = currentStatus === "ACTIVE";
+        const notifType = isPositive ? "SUCCESS" : "WARNING";
+        const title = isPositive
+            ? "Bank Account Re-activated ✅"
+            : `Bank Account ${currentStatus}`;
+        const message = `Your managed U.S. bank account for ${companyName} changed from ${previousStatus} to ${currentStatus}.${reason ? ` ${reason}` : ""}`;
+
+        // Immutable audit log entry
+        await prisma.notificationLog.create({
+            data: {
+                recipientId: userId,
+                channel: "IN_APP",
+                type: "BANK_ACCOUNT_STATUS_CHANGE",
+                subject: title,
+                content: message,
+                metadata: { organizationId, previousStatus, currentStatus, reason }
+            }
+        }).catch(err => console.warn("Note:", err.message));
+
+        // Real-time in-app notification
+        await prisma.notification.create({
+            data: {
+                userId,
+                title,
+                message,
+                type: notifType
+            }
+        }).catch(err => console.warn("Note:", err.message));
+
+        // Email (best-effort)
+        if (recipientEmail) {
+            await sendAccountStatusChangeEmail({
+                email: recipientEmail,
+                companyName,
+                previousStatus,
+                currentStatus,
+                reason
+            });
+        }
+    } catch (err: any) {
+        console.error("❌ Error in notifyAccountStatusChange:", err.message);
+    }
+}
+

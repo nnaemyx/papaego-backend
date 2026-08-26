@@ -698,7 +698,7 @@ export async function sendTradeCancelledEmail({
   dashboardLink: string;
   adminEmails?: string[];
 }) {
-    const recipients = [customerEmail, ...(adminEmails || [])];
+  const recipients = [customerEmail, ...(adminEmails || [])];
   try {
     await getResendClient().emails.send({
       from: 'PapaEgo <support@papaego.com>',
@@ -1126,6 +1126,65 @@ export async function sendProvisioningFailedOpsEmail({ adminEmail, companyName, 
     return { success: false, error: err.message };
   }
 }
+
+/**
+ * Sends notification when a managed bank account status changes
+ * (Suspended, Frozen, Closed, Restricted, Re-activated) via FV Bank
+ * webhook or synchronization.
+ */
+export async function sendAccountStatusChangeEmail({
+  email,
+  companyName,
+  previousStatus,
+  currentStatus,
+  reason
+}: {
+  email: string;
+  companyName: string;
+  previousStatus: string;
+  currentStatus: string;
+  reason?: string;
+}) {
+  try {
+    const fromAddress = process.env.RESEND_FROM_EMAIL || 'PapaEgo Banking <verify@papaego.com>';
+    console.log(`📧 Sending Bank Account Status Change email to ${email} (${previousStatus} → ${currentStatus})...`);
+
+    const isPositive = currentStatus === "ACTIVE";
+    const accent = isPositive ? "#16a34a" : "#ef4444";
+    const heading = isPositive
+      ? "Your Managed U.S. Bank Account is Active Again"
+      : `Managed U.S. Bank Account Status Update: ${currentStatus}`;
+
+    const { data, error } = await getResendClient().emails.send({
+      from: fromAddress,
+      to: email,
+      subject: `Bank Account ${currentStatus} - ${companyName}`,
+      text: `Hello, the status of your managed U.S. bank account for ${companyName} changed from ${previousStatus} to ${currentStatus}.${reason ? ` Reason: ${reason}` : ""}`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px; border-left: 4px solid ${accent};">
+          <h2 style="color: #012333;">${heading}</h2>
+          <p>Hello,</p>
+          <p>The status of your dedicated FV Bank U.S. account for <strong>${companyName}</strong> has been updated.</p>
+          <div style="background-color: #f4f6f8; padding: 15px; border-radius: 8px; margin: 15px 0;">
+            <p><strong>Previous Status:</strong> ${previousStatus}</p>
+            <p><strong>Current Status:</strong> ${currentStatus}</p>
+            ${reason ? `<p><strong>Details:</strong> ${reason}</p>` : ""}
+          </div>
+          ${isPositive
+          ? "<p>Your account is fully operational and ready for funding.</p>"
+          : "<p>If you have questions about this change, please contact PapaEgo support or review your banking dashboard.</p>"}
+        </div>
+      `
+    });
+
+    if (error) console.error("❌ Error sending account status change email:", error.message);
+    return { success: !error, messageId: data?.id };
+  } catch (err: any) {
+    console.error("❌ Exception in sendAccountStatusChangeEmail:", err.message);
+    return { success: false, error: err.message };
+  }
+}
+
 
 
 

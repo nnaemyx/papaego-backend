@@ -60,10 +60,15 @@ export async function checkBankingEligibility(organizationId: string): Promise<E
     const notSuspended = org.status !== "SUSPENDED" && org.status !== "REJECTED";
     const qualificationCompleted = org.qualification !== null && org.qualification.outcome === "QUALIFIED";
 
-    const latestKyc = org.kycRequests[0];
-    const kycApproved = latestKyc !== undefined && latestKyc.status === "APPROVED";
+    const now = new Date();
 
-    const kybApproved = org.kybRequest !== null && org.kybRequest.status === "APPROVED";
+    const latestKyc = org.kycRequests[0];
+    const kycNotExpired = !latestKyc?.expiresAt || latestKyc.expiresAt > now;
+    const kycApproved = latestKyc !== undefined && latestKyc.status === "APPROVED" && kycNotExpired;
+
+    const kybNotExpired = !org.kybRequest?.expiresAt || org.kybRequest.expiresAt > now;
+    const kybApproved = org.kybRequest !== null && org.kybRequest.status === "APPROVED" && kybNotExpired;
+
 
     // No existing active or creating managed bank account
     const existingAcc = org.bankAccount;
@@ -88,6 +93,8 @@ export async function checkBankingEligibility(organizationId: string): Promise<E
             reasons.push("Identity verification (KYC) has not been submitted.");
         } else if (latestKyc.status !== "APPROVED") {
             reasons.push(`Identity verification (KYC) status is '${latestKyc.status}'. Requires 'APPROVED'.`);
+        } else if (!kycNotExpired) {
+            reasons.push("Identity verification (KYC) has expired and must be renewed before an account can be provisioned.");
         }
     }
     if (!kybApproved) {
@@ -95,8 +102,11 @@ export async function checkBankingEligibility(organizationId: string): Promise<E
             reasons.push("Corporate verification (KYB) has not been submitted.");
         } else if (org.kybRequest.status !== "APPROVED") {
             reasons.push(`Corporate verification (KYB) status is '${org.kybRequest.status}'. Requires 'APPROVED'.`);
+        } else if (!kybNotExpired) {
+            reasons.push("Corporate verification (KYB) has expired and must be renewed before an account can be provisioned.");
         }
     }
+
     if (!noExistingActiveAccount) {
         reasons.push(`Organization already has a managed bank account (Account Number: ${existingAcc?.accountNumber}, Status: ${existingAcc?.status}).`);
     }

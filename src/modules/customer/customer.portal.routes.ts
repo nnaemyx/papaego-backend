@@ -1037,6 +1037,273 @@ router.post("/feedback", async (req: Request, res: Response) => {
     }
 });
 
+// --- Pay from Wallet / Ledger ---
+router.post("/wallet/check-balance", async (req: Request, res: Response) => {
+    try {
+        const customer = (req as any).user.customer;
+        const { amount } = req.body;
+        const parsedAmount = parseFloat(String(amount || 0));
+        const { checkWalletBalance } = await import("../wallet/wallet.service");
+        const balanceInfo = await checkWalletBalance(customer.id, parsedAmount);
+        res.json(balanceInfo);
+    } catch (error) {
+        console.error("Error checking balance:", error);
+        res.status(500).json({ error: "Failed to check ledger balance" });
+    }
+});
+
+router.post("/trades/:id/pay-from-wallet", async (req: Request, res: Response) => {
+    try {
+        const customer = (req as any).user.customer;
+        const userId = (req as any).user.id;
+        const { id } = req.params;
+
+        let trade = await prisma.trade.findFirst({
+            where: { id, customerId: customer.id }
+        });
+        if (!trade) {
+            trade = await prisma.trade.findFirst({
+                where: { tradeRequestId: id, customerId: customer.id }
+            });
+        }
+
+        if (trade) {
+            const activeTrade = await checkAndRefreshTradeExpiry(trade);
+            if (!activeTrade) return res.status(404).json({ error: "Trade not found" });
+
+            // Required NGN amount
+            const amountToDebit = Number(activeTrade.amount);
+
+            // Reserve or debit funds from customer wallet
+            const { reserveFunds } = await import("../wallet/wallet.service");
+            try {
+                await reserveFunds(customer.id, amountToDebit, {
+                    tradeId: activeTrade.id,
+                    description: `Payment for trade #${activeTrade.id.slice(0, 8).toUpperCase()}`,
+                    actorId: userId,
+                    metadata: {
+                        sendCurrency: activeTrade.sendCurrency,
+                        receiveCurrency: activeTrade.receiveCurrency,
+                        paymentSource: "NGN_LEDGER",
+                    }
+                });
+            } catch (err: any) {
+                return res.status(400).json({ error: err.message || "Insufficient ledger balance" });
+            }
+
+            const updatedTrade = await prisma.trade.update({
+                where: { id: activeTrade.id },
+                data: {
+                    status: "PAYMENT_CONFIRMED",
+                    paymentMethod: "WALLET",
+                    paymentSource: "NGN_LEDGER"
+                }
+            });
+
+            await prisma.auditLog.create({
+                data: {
+                    actorId: userId,
+                    role: "CUSTOMER",
+                    action: "PAYMENT_CONFIRMED_VIA_WALLET",
+                    entity: "Trade",
+                    entityId: activeTrade.id,
+                    ip: req.ip || "127.0.0.1",
+                    metadata: {
+                        amount: amountToDebit,
+                        paymentSource: "NGN_LEDGER"
+                    }
+                }
+            });
+
+            return res.json({
+                success: true,
+                trade: updatedTrade,
+                message: "Trade funded successfully from NGN Ledger"
+            });
+        }
+
+        // Check if it is a TradeRequest
+        const tradeRequest = await prisma.tradeRequest.findFirst({
+            where: { id, customerId: customer.id }
+        });
+
+        if (!tradeRequest) {
+            return res.status(404).json({ error: "Trade not found" });
+        }
+
+        const amountToDebit = Number(tradeRequest.amount);
+        const { reserveFunds } = await import("../wallet/wallet.service");
+        try {
+            await reserveFunds(customer.id, amountToDebit, {
+                tradeRequestId: tradeRequest.id,
+                description: `Payment for trade request #${tradeRequest.id.slice(0, 8).toUpperCase()}`,
+                actorId: userId,
+                metadata: {
+                    sendCurrency: tradeRequest.sendCurrency,
+                    receiveCurrency: tradeRequest.receiveCurrency,
+                    paymentSource: "NGN_LEDGER",
+                }
+            });
+        } catch (err: any) {
+            return res.status(400).json({ error: err.message || "Insufficient ledger balance" });
+        }
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: userId,
+                role: "CUSTOMER",
+                action: "PAYMENT_CONFIRMED_VIA_WALLET",
+                entity: "TradeRequest",
+                entityId: tradeRequest.id,
+                ip: req.ip || "127.0.0.1",
+                metadata: {
+                    amount: amountToDebit,
+                    paymentSource: "NGN_LEDGER"
+                }
+            }
+        });
+
+        return res.json({
+            success: true,
+            trade: tradeRequest,
+            message: "Trade request funded successfully from NGN Ledger"
+        });
+    } catch (error) {
+        console.error("Error paying from wallet:", error);
+        res.status(500).json({ error: "Failed to process payment from wallet" });
+    }
+});
+
+// --- Paystack Direct Deposit ---
+router.post("/wallet/paystack/initialize", async (req: Request, res: Response) => {
+    try {
+        const customer = (req as any).user.customer;
+        const user = (req as any).user;
+        const { amount } = req.body;
+
+        if (!amount || Number(amount) <= 0) {
+            return res.status(400).json({ error: "Valid amount is required" });
+        }
+
+        const reference = `PSTK_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`.toUpperCase();
+        const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY || "sk_test_placeholder";
+        const paystackPublicKey = process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY || process.env.PAYSTACK_PUBLIC_KEY || "pk_test_placeholder";
+
+        res.json({
+            reference,
+            amount: Number(amount),
+            email: user.email || customer.email,
+            publicKey: paystackPublicKey,
+            currency: "NGN",
+            metadata: {
+                customerId: customer.id,
+                userId: user.id,
+                customerEmail: user.email || customer.email
+            }
+        });
+    } catch (error) {
+        console.error("Error initializing Paystack deposit:", error);
+        res.status(500).json({ error: "Failed to initialize Paystack deposit" });
+    }
+});
+
+router.post("/wallet/paystack/verify", async (req: Request, res: Response) => {
+    try {
+        const customer = (req as any).user.customer;
+        const userId = (req as any).user.id;
+        const { reference, amount } = req.body;
+
+        if (!reference) {
+            return res.status(400).json({ error: "Transaction reference is required" });
+        }
+
+        // 1. Idempotency Check: Was this transaction already credited (e.g. by Webhook)?
+        const existingTx = await prisma.walletTransaction.findFirst({
+            where: {
+                customerId: customer.id,
+                OR: [
+                    { description: { contains: reference } },
+                    { metadata: { path: ["reference"], equals: reference } }
+                ]
+            }
+        });
+
+        if (existingTx) {
+            const currentWallet = await prisma.customerWallet.findUnique({ where: { customerId: customer.id } });
+            return res.json({
+                success: true,
+                amount: Number(existingTx.amount),
+                availableBalance: currentWallet?.availableBalance?.toString() || "0",
+                message: "Deposit already verified and credited to ledger"
+            });
+        }
+
+        const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY;
+        let verifiedAmount = Number(amount);
+
+        // If secret key is present, verify directly with Paystack API
+        if (paystackSecretKey && !paystackSecretKey.includes("placeholder")) {
+            try {
+                const response = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
+                    headers: {
+                        Authorization: `Bearer ${paystackSecretKey}`,
+                    },
+                });
+                const data = await response.json();
+                if (!data.status || data.data.status !== "success") {
+                    return res.status(400).json({ error: "Paystack payment verification failed" });
+                }
+                verifiedAmount = data.data.amount / 100; // Paystack amounts are in kobo
+            } catch (paystackErr) {
+                console.error("Paystack API verification error:", paystackErr);
+            }
+        }
+
+        if (!verifiedAmount || verifiedAmount <= 0) {
+            return res.status(400).json({ error: "Invalid payment amount" });
+        }
+
+        // Credit the customer's wallet
+        const { creditWallet } = await import("../wallet/wallet.service");
+        const updatedWallet = await creditWallet(
+            customer.id,
+            verifiedAmount,
+            "DEPOSIT",
+            {
+                description: `Paystack Deposit (${reference})`,
+                actorId: userId,
+                metadata: {
+                    reference,
+                    channel: "PAYSTACK_CLIENT_VERIFY",
+                    verifiedAt: new Date().toISOString()
+                }
+            }
+        );
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: userId,
+                role: "CUSTOMER",
+                action: "PAYSTACK_DEPOSIT_CREDITED",
+                entity: "CustomerWallet",
+                entityId: updatedWallet.id,
+                ip: req.ip || "127.0.0.1",
+                metadata: { reference, amount: verifiedAmount }
+            }
+        });
+
+        res.json({
+            success: true,
+            amount: verifiedAmount,
+            availableBalance: updatedWallet.availableBalance.toString(),
+            message: "Deposit confirmed and credited to ledger"
+        });
+    } catch (error) {
+        console.error("Error verifying Paystack deposit:", error);
+        res.status(500).json({ error: "Failed to verify deposit" });
+    }
+});
+
 // --- Wallet & Deposits ---
 router.get("/wallet", getMyWallet);
 router.post("/wallet/deposits", uploadToCloudinary.single("proof"), createDepositRequest);

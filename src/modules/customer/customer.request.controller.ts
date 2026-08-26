@@ -3,7 +3,7 @@ import prisma from "../../config/db";
 import { sendTradeInitiatedEmail } from "../../services/email.service";
 import { createNotification } from "../notifications/notification.service";
 import { checkAndRefreshTradeRequestExpiry } from "./customer.portal.routes";
-import { assertSufficientBalance, reserveFunds, releaseReservation, InsufficientFundsError } from "../wallet/wallet.service";
+import { assertSufficientBalance, reserveFunds, releaseReservation, checkWalletBalance, InsufficientFundsError } from "../wallet/wallet.service";
 
 
 
@@ -48,10 +48,12 @@ export async function createTradeRequest(req: Request, res: Response) {
                 await assertSufficientBalance(customerId, parseFloat(String(amount)));
             } catch (err) {
                 if (err instanceof InsufficientFundsError) {
+                    const balanceInfo = await checkWalletBalance(customerId, parseFloat(String(amount)));
                     return res.status(402).json({
-                        error: "Insufficient wallet balance. Please fund your wallet before submitting this trade.",
+                        error: "Insufficient ledger balance. Please deposit via Paystack or bank transfer to fund your trade.",
                         code: "INSUFFICIENT_FUNDS",
                         detail: err.message,
+                        ...balanceInfo,
                     });
                 }
                 throw err;
@@ -345,10 +347,12 @@ export async function updateCustomerTradeRequest(req: Request, res: Response) {
                 await assertSufficientBalance(customerId, effectiveAmount);
             } catch (err) {
                 if (err instanceof InsufficientFundsError) {
+                    const balanceInfo = await checkWalletBalance(customerId, effectiveAmount);
                     return res.status(402).json({
-                        error: "Insufficient wallet balance. Please fund your wallet before submitting this trade.",
+                        error: "Insufficient ledger balance. Please deposit via Paystack or bank transfer to fund your trade.",
                         code: "INSUFFICIENT_FUNDS",
                         detail: err.message,
+                        ...balanceInfo,
                     });
                 }
                 throw err;

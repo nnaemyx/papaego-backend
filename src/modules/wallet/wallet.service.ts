@@ -46,6 +46,30 @@ export async function getWalletSummary(customerId: string) {
     return { wallet, transactions };
 }
 
+/**
+ * Check if customer has enough available balance for a specified amount.
+ */
+export async function checkWalletBalance(
+    customerId: string,
+    amount: number | Prisma.Decimal,
+    db: Db = prisma
+) {
+    const amt = new Prisma.Decimal(amount);
+    const wallet = await getOrCreateWallet(customerId, db);
+    const available = wallet.availableBalance ?? new Prisma.Decimal(0);
+    const sufficient = available.greaterThanOrEqualTo(amt);
+    const shortfall = sufficient ? new Prisma.Decimal(0) : amt.minus(available);
+
+    return {
+        sufficient,
+        availableBalance: available.toString(),
+        reservedBalance: wallet.reservedBalance.toString(),
+        requiredAmount: amt.toString(),
+        shortfall: shortfall.toString(),
+        currency: wallet.currency,
+    };
+}
+
 interface LedgerOptions {
     description: string;
     depositRequestId?: string;

@@ -50,7 +50,8 @@ export async function getCustomers(req: Request, res: Response) {
                         isActive: true,
                         createdAt: true
                     }
-                }
+                },
+                wallet: true
             },
             orderBy: { createdAt: 'desc' }
         });
@@ -84,14 +85,26 @@ export async function getCustomers(req: Request, res: Response) {
                 });
 
                 const latestKyc = org?.kycRequests?.[0] || null;
+                const availableBalance = customer.wallet?.availableBalance ? Number(customer.wallet.availableBalance) : 0;
+                const reservedBalance = customer.wallet?.reservedBalance ? Number(customer.wallet.reservedBalance) : 0;
+                const totalBalance = availableBalance + reservedBalance;
+
+                const isVerified = Boolean(customer.verified || org?.status === "ACTIVE" || latestKyc?.status === "APPROVED" || customer.kycStatus === "APPROVED");
+                const isReview = Boolean(latestKyc?.status === "MANUAL_REVIEW" || latestKyc?.status === "PROCESSING" || customer.kycStatus === "UNDER_REVIEW" || customer.kycStatus === "SUBMITTED");
+                const customerStatus = isVerified ? 'Active' : (isReview ? 'Review' : 'Pending');
 
                 return {
                     id: customer.id,
-                    customerId: `PE-${customer.id.slice(0, 6).toUpperCase()}`,
-                    name: customer.fullName,
+                    customerId: `CUST-${customer.id.slice(0, 5).toUpperCase()}`,
+                    name: customer.companyName || customer.fullName || "Corporate Customer",
                     lastTrade: lastTrade ? lastTrade.createdAt.toISOString() : null,
                     totalTransactions: trades.length,
-                    verificationStatus: customer.verified || org?.status === "ACTIVE" ? 'Verified' : 'Pending',
+                    verificationStatus: customerStatus,
+                    status: customerStatus,
+                    currency: customer.wallet?.currency || "NGN",
+                    totalBalance,
+                    availableBalance,
+                    reservedBalance,
                     email: customer.email,
                     phone: customer.phone || customer.user.phone,
                     createdAt: customer.createdAt,
@@ -125,10 +138,17 @@ export async function getCustomers(req: Request, res: Response) {
 // Get customer statistics
 export async function getCustomerStats(req: Request, res: Response) {
     try {
-        const totalCustomers = await prisma.customer.count();
-        const verifiedCustomers = await prisma.customer.count({
-            where: { verified: true }
-        });
+        const [totalCustomers, verifiedCustomers, wallets, allTrades] = await Promise.all([
+            prisma.customer.count(),
+            prisma.customer.count({ where: { verified: true } }),
+            prisma.customerWallet.findMany(),
+            prisma.trade.findMany({ select: { amount: true } })
+        ]);
+
+        const tradeVolumeSum = allTrades.reduce((sum, t) => sum + Number(t.amount || 0), 0);
+        const walletAvailableSum = wallets.reduce((sum, w) => sum + Number(w.availableBalance || 0), 0);
+        const walletReservedSum = wallets.reduce((sum, w) => sum + Number(w.reservedBalance || 0), 0);
+        const totalAum = walletAvailableSum + walletReservedSum + (tradeVolumeSum > 0 ? tradeVolumeSum : 0);
 
         // Get high-value customers (those with > 5 trades)
         const allCustomers = await prisma.customer.findMany({
@@ -163,6 +183,9 @@ export async function getCustomerStats(req: Request, res: Response) {
         res.json({
             totalCustomers,
             verifiedCustomers,
+            activeCustomers: totalCustomers || 0,
+            totalAum,
+            totalReservedFunds: walletReservedSum,
             highValueCustomers,
             activeCustomersToday: activeTodayIds.length
         });
@@ -188,6 +211,19 @@ export async function getCustomer(req: Request, res: Response) {
                         isActive: true,
                         createdAt: true
                     }
+                },
+                wallet: {
+                    include: {
+                        transactions: {
+                            orderBy: { createdAt: 'desc' },
+                            take: 20
+                        }
+                    }
+                },
+                bankDetails: true,
+                depositRequests: {
+                    orderBy: { createdAt: 'desc' },
+                    take: 10
                 },
                 notes: {
                     include: {
@@ -318,14 +354,29 @@ export async function getCustomer(req: Request, res: Response) {
         });
 
         const latestKyc = org?.kycRequests?.[0] || null;
+        const availableBalance = customer.wallet?.availableBalance ? Number(customer.wallet.availableBalance) : 0;
+        const reservedBalance = customer.wallet?.reservedBalance ? Number(customer.wallet.reservedBalance) : 0;
+        const totalDeposited = customer.wallet?.totalDeposited ? Number(customer.wallet.totalDeposited) : 0;
 
         res.json({
             ...customer,
             name: customer.fullName,
             phone: customer.phone || customer.user?.phone || null,
+            email: customer.email || customer.user?.email || null,
             dateJoined: customer.createdAt.toISOString(),
             customerId: `PE-${customer.id.slice(0, 6).toUpperCase()}`,
             verificationStatus: customer.verified || org?.status === "ACTIVE" ? 'Verified' : 'Pending',
+            kycStatus: customer.kycStatus || latestKyc?.status || (customer.verified ? 'APPROVED' : 'NOT_SUBMITTED'),
+            walletBalance: availableBalance,
+            availableBalance,
+            reservedBalance,
+            totalDeposited,
+            walletTransactions: customer.wallet?.transactions || [],
+            bankDetails: customer.bankDetails || null,
+            depositRequests: customer.depositRequests || [],
+            homeAddress: customer.homeAddress || null,
+            bvn: customer.bvn || null,
+            nin: customer.nin || null,
             totalTransactions: allTrades.length,
             totalVolume: `₦${totalVolume.toLocaleString()}`,
             mostTradedPair,
