@@ -379,7 +379,7 @@ export async function initiateSignup(req: Request, res: Response, next: NextFunc
             email,
             userName: firstName,
             otp
-        });
+        }).catch((err) => console.error("⚠️ Failed to send Resend OTP email:", err));
 
         // 10. Audit Log
         await prisma.auditLog.create({
@@ -394,7 +394,10 @@ export async function initiateSignup(req: Request, res: Response, next: NextFunc
             }
         });
 
-        res.status(200).json({ message: "OTP sent to your email. Please verify to activate your account." });
+        res.status(200).json({
+            message: "OTP sent to your email. Please verify to activate your account.",
+            devOtp: process.env.NODE_ENV !== "production" ? otp : undefined
+        });
     } catch (error) {
         console.error("Initiate signup error:", error);
         next(error);
@@ -633,7 +636,7 @@ export async function resendSignupOtp(req: Request, res: Response, next: NextFun
             email,
             userName: user.firstName || "Customer",
             otp
-        });
+        }).catch((err) => console.error("⚠️ Failed to send Resend OTP email:", err));
 
         // 6. Audit resend
         await prisma.auditLog.create({
@@ -648,7 +651,10 @@ export async function resendSignupOtp(req: Request, res: Response, next: NextFun
             }
         });
 
-        res.status(200).json({ message: "Verification code resent successfully." });
+        res.status(200).json({
+            message: "Verification code resent successfully.",
+            devOtp: process.env.NODE_ENV !== "production" ? otp : undefined
+        });
     } catch (error) {
         console.error("Resend signup OTP error:", error);
         next(error);
@@ -661,7 +667,26 @@ export async function resendSignupOtp(req: Request, res: Response, next: NextFun
 export async function submitSignupKyc(req: Request, res: Response, next: NextFunction) {
     try {
         const userId = (req as any).user.id;
-        const customer = (req as any).user.customer; // Attached via populateCustomer middleware
+        let customer = (req as any).user.customer; // Attached via populateCustomer middleware
+
+        if (!customer) {
+            customer = await prisma.customer.findUnique({ where: { userId } });
+        }
+
+        if (!customer) {
+            const user = await prisma.user.findUnique({ where: { id: userId } });
+            customer = await prisma.customer.create({
+                data: {
+                    userId,
+                    fullName: `${user?.firstName || ''} ${user?.lastName || ''}`.trim() || user?.email || "Customer",
+                    email: user?.email || "",
+                    phone: user?.phone || "",
+                    bvn: req.body.bvn || "",
+                    verified: false,
+                    kycStatus: "NOT_SUBMITTED"
+                }
+            });
+        }
 
         const {
             gender,
