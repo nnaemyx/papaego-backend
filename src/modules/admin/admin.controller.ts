@@ -456,10 +456,12 @@ export async function getDashboardStats(req: Request, res: Response) {
         const inProgressTrades = allTrades.filter(t => inProgressStatuses.includes(t.status));
         const inProgressTradesSum = inProgressTrades.reduce((sum, t) => sum + Number(t.amount || 0), 0);
 
-        // Treasury position strictly reflects Treasury accounts (0 if none configured)
-        const totalTreasuryValue = treasuryTotal;
-        const availableLiquidity = treasuryAvailable;
-        const pendingSettlement = walletReserved > 0 ? walletReserved : inProgressTradesSum;
+        // Total Treasury Value = Combined capital across dedicated treasury accounts + customer ledger balances held
+        const totalTreasuryValue = treasuryTotal + walletAvailable + walletReserved;
+        // Available Liquidity = Unencumbered liquid funds available for trading operations
+        const availableLiquidity = treasuryAvailable + walletAvailable;
+        // Pending Settlement = Reserved customer funds + in-flight trade value awaiting settlement
+        const pendingSettlement = walletReserved + inProgressTradesSum;
         const customerLedgerBalance = walletAvailable + walletReserved;
 
         // --- Trade health breakdown (%) ---

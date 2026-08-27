@@ -31,8 +31,7 @@ export async function getMyOrganization(req: Request, res: Response, next: NextF
     try {
         const userId = (req as any).user.id;
         const org = await OrgService.getMyOrganization(userId);
-        if (!org) return res.status(404).json({ error: "No organization found for your account." });
-        res.json({ organization: org });
+        res.json({ organization: org || null });
     } catch (error) {
         next(error);
     }

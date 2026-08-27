@@ -162,7 +162,7 @@ model Notification {
   isRead    Boolean  @default(false)
   createdAt DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Country {
@@ -287,8 +287,8 @@ model TradeRequest {
   originalFxRate  Decimal?
   negotiatedRate  Decimal?
 
-  customer     Customer      @relation(fields: [customerId], references: [id])
-  agent        User?         @relation("AgentTradeRequests", fields: [agentId], references: [id])
+  customer     Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  agent        User?         @relation("AgentTradeRequests", fields: [agentId], references: [id], onDelete: SetNull)
   chatMessages ChatMessage[]
 }
 
@@ -322,8 +322,8 @@ model CustomerDocument {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  customer Customer @relation(fields: [customerId], references: [id])
-  agent    User     @relation("AgentDocuments", fields: [agentId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  agent    User     @relation("AgentDocuments", fields: [agentId], references: [id], onDelete: Cascade)
 }
 
 // ---------- TRADES ----------
@@ -376,8 +376,8 @@ model Trade {
   supplierSector        String?
   supplierAddress       String?
 
-  customer     Customer      @relation("CustomerTrades", fields: [customerId], references: [id])
-  agent        User          @relation("AgentTrades", fields: [agentId], references: [id])
+  customer     Customer      @relation("CustomerTrades", fields: [customerId], references: [id], onDelete: Cascade)
+  agent        User          @relation("AgentTrades", fields: [agentId], references: [id], onDelete: Cascade)
   commissions  Commission[]
   chatMessages ChatMessage[]
   agentRating  AgentRating?
@@ -499,7 +499,7 @@ model Commission {
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 
-  agent      User                 @relation("AgentCommissions", fields: [agentId], references: [id])
+  agent      User                 @relation("AgentCommissions", fields: [agentId], references: [id], onDelete: Cascade)
   trade      Trade                @relation(fields: [tradeId], references: [id])
   activities CommissionActivity[]
 }
@@ -522,8 +522,8 @@ model CustomerNote {
   content    String
   createdAt  DateTime @default(now())
 
-  customer Customer @relation(fields: [customerId], references: [id])
-  agent    User     @relation("AgentNotes", fields: [agentId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  agent    User     @relation("AgentNotes", fields: [agentId], references: [id], onDelete: Cascade)
 }
 
 // ---------- SUPPLIERS ----------
@@ -885,7 +885,7 @@ model CashoutRequest {
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
 
-  agent User @relation(fields: [agentId], references: [id])
+  agent User @relation(fields: [agentId], references: [id], onDelete: Cascade)
 }
 
 // ---------- SPRINT 1: ORGANIZATIONS ----------
@@ -940,7 +940,7 @@ model OrganizationMember {
   createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User         @relation("OrgMembers", fields: [userId], references: [id])
+  user         User         @relation("OrgMembers", fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, userId])
   @@index([organizationId])
@@ -993,7 +993,7 @@ model KycRequest {
   updatedAt           DateTime           @updatedAt
 
   organization  Organization                @relation(fields: [organizationId], references: [id])
-  user          User                        @relation("KycUser", fields: [userId], references: [id])
+  user          User                        @relation("KycUser", fields: [userId], references: [id], onDelete: Cascade)
   documents     VerificationDocument[]      @relation("KycDocuments")
   statusHistory VerificationStatusHistory[] @relation("KycHistory")
 

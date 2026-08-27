@@ -98,14 +98,30 @@ router.post("/paystack", async (req: Request, res: Response) => {
             }
         );
 
-        // 4. Create Audit Log for admin and compliance tracking
+        // 4. Create a DepositRequest record so it appears on admin Deposits page
+        const depositRecord = await prisma.depositRequest.create({
+            data: {
+                customerId: customer.id,
+                amount: amountInNgn,
+                currency: "NGN",
+                method: "PAYSTACK",
+                reference,
+                note: `Auto-approved via Paystack webhook (Gateway: ${data.gateway_response || "success"})`,
+                status: "APPROVED",
+                creditedAmount: amountInNgn,
+                reviewedBy: "SYSTEM",
+                reviewedAt: new Date(),
+            }
+        });
+
+        // 5. Create Audit Log for admin and compliance tracking
         await prisma.auditLog.create({
             data: {
                 actorId: customer.userId || customer.id,
                 role: "ADMIN",
                 action: "PAYSTACK_WEBHOOK_DEPOSIT_CREDITED",
-                entity: "CustomerWallet",
-                entityId: updatedWallet.id,
+                entity: "DepositRequest",
+                entityId: depositRecord.id,
                 ip: req.ip || "127.0.0.1",
                 metadata: {
                     reference,
