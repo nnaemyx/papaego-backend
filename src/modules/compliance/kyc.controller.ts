@@ -21,21 +21,22 @@ export async function submitKyc(req: Request, res: Response, next: NextFunction)
             return res.status(400).json({ error: "Organization must complete and pass business qualification before KYC submission." });
         }
 
-        // Check for existing active KYC. A DRAFT is reusable (previous FV Bank
-        // submission failed and was queued) — everything else blocks a new one.
+        // Check for existing active KYC.
+        // During onboarding, applications in DRAFT, SUBMITTED, or PENDING can be updated/resubmitted
+        // if the user navigated back to correct information.
         const existingKyc = await prisma.kycRequest.findFirst({
             where: { organizationId, userId, status: { notIn: ["REJECTED", "EXPIRED"] } },
             orderBy: { createdAt: "desc" }
         });
-        if (existingKyc && existingKyc.status !== "DRAFT") {
+        if (existingKyc && existingKyc.status === "APPROVED") {
             return res.status(409).json({
-                error: "An active KYC application already exists.",
+                error: "Your KYC application has already been approved.",
                 kycId: existingKyc.id,
                 status: existingKyc.status
             });
         }
 
-        // Reuse a queued DRAFT record if present, otherwise create a fresh one.
+        // Reuse / update existing record if present in editable state, otherwise create a fresh one.
         const kyc = existingKyc
             ? await prisma.kycRequest.update({
                 where: { id: existingKyc.id },

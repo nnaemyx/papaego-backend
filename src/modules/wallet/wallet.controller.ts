@@ -15,13 +15,29 @@ export async function getMyWallet(req: Request, res: Response) {
         const customer = (req as any).user.customer;
         if (!customer) return res.status(403).json({ error: "Customer profile not found" });
 
-        const { wallet, transactions } = await getWalletSummary(customer.id);
+        const { page, limit, type, startDate, endDate, minAmount, maxAmount, search } = req.query;
+
+        const { wallet, transactions, totalCount, totalPages, page: currentPage, limit: currentLimit } = await getWalletSummary(customer.id, {
+            page: page ? Number(page) : undefined,
+            limit: limit ? Number(limit) : undefined,
+            type: type as any,
+            startDate: startDate ? new Date(startDate as string) : undefined,
+            endDate: endDate ? new Date(endDate as string) : undefined,
+            minAmount: minAmount ? Number(minAmount) : undefined,
+            maxAmount: maxAmount ? Number(maxAmount) : undefined,
+            search: search as string | undefined,
+        });
+
         res.json({
             id: wallet.id,
             currency: wallet.currency,
             availableBalance: wallet.availableBalance.toString(),
             reservedBalance: wallet.reservedBalance.toString(),
             totalDeposited: wallet.totalDeposited.toString(),
+            totalCount,
+            totalPages,
+            page: currentPage,
+            limit: currentLimit,
             transactions: transactions.map((t) => ({
                 id: t.id,
                 type: t.type,

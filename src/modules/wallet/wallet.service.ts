@@ -36,14 +36,62 @@ export async function getOrCreateWallet(customerId: string, db: Db = prisma) {
     return db.customerWallet.create({ data: { customerId } });
 }
 
-export async function getWalletSummary(customerId: string) {
+export interface WalletFilterOptions {
+    page?: number;
+    limit?: number;
+    type?: WalletTransactionType;
+    startDate?: Date;
+    endDate?: Date;
+    minAmount?: number;
+    maxAmount?: number;
+    search?: string;
+}
+
+export async function getWalletSummary(customerId: string, filters?: WalletFilterOptions) {
     const wallet = await getOrCreateWallet(customerId);
-    const transactions = await prisma.walletTransaction.findMany({
-        where: { walletId: wallet.id },
-        orderBy: { createdAt: "desc" },
-        take: 50,
-    });
-    return { wallet, transactions };
+    const page = filters?.page ? Math.max(1, Number(filters.page)) : 1;
+    const limit = filters?.limit ? Math.min(100, Math.max(1, Number(filters.limit))) : 20;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.WalletTransactionWhereInput = { walletId: wallet.id };
+
+    if (filters?.type) {
+        where.type = filters.type;
+    }
+
+    if (filters?.startDate || filters?.endDate) {
+        where.createdAt = {};
+        if (filters.startDate) where.createdAt.gte = new Date(filters.startDate);
+        if (filters.endDate) where.createdAt.lte = new Date(filters.endDate);
+    }
+
+    if (filters?.minAmount != null || filters?.maxAmount != null) {
+        where.amount = {};
+        if (filters.minAmount != null) where.amount.gte = new Prisma.Decimal(filters.minAmount);
+        if (filters.maxAmount != null) where.amount.lte = new Prisma.Decimal(filters.maxAmount);
+    }
+
+    if (filters?.search) {
+        const query = filters.search.trim();
+        where.OR = [
+            { description: { contains: query, mode: "insensitive" } },
+            { id: { contains: query } },
+        ];
+    }
+
+    const [transactions, totalCount] = await Promise.all([
+        prisma.walletTransaction.findMany({
+            where,
+            orderBy: { createdAt: "desc" },
+            skip,
+            take: limit,
+        }),
+        prisma.walletTransaction.count({ where }),
+    ]);
+
+    const totalPages = Math.ceil(totalCount / limit) || 1;
+
+    return { wallet, transactions, totalCount, totalPages, page, limit };
 }
 
 /**

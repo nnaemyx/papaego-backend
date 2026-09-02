@@ -24,9 +24,9 @@ export async function submitKyb(req: Request, res: Response, next: NextFunction)
 
         // Check for existing active KYB
         const existingKyb = await prisma.kybRequest.findUnique({ where: { organizationId } });
-        if (existingKyb && !["REJECTED", "EXPIRED"].includes(existingKyb.status)) {
+        if (existingKyb && existingKyb.status === "APPROVED") {
             return res.status(409).json({
-                error: "An active KYB application already exists.",
+                error: "Your KYB application has already been approved.",
                 kybId: existingKyb.id,
                 status: existingKyb.status
             });
