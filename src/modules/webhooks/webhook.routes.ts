@@ -140,6 +140,154 @@ router.post("/paystack", async (req: Request, res: Response) => {
     }
 });
 
+// ─── MoneyPings server-to-server webhook ───────────────────────────────────
+// MoneyPings signs every delivery with HMAC-SHA256 over the raw request body
+// using the secret returned when you register your endpoint URL.
+// The event to act on is "wallet.credited" — other events are acknowledged
+// but not processed (collection.received, collection.confirmed, etc.).
+router.post("/moneypings", async (req: Request, res: Response) => {
+    try {
+        const mpSecret = process.env.MONEYPINGS_WEBHOOK_SECRET;
+        const sentSig = (req.headers["x-webhook-signature"] as string) || "";
+        const webhookId = (req.headers["x-webhook-id"] as string) || "";
+        const rawBody = (req as any).rawBody || JSON.stringify(req.body);
+
+        // 1. Verify HMAC-SHA256 signature (constant-time compare)
+        if (mpSecret && !mpSecret.includes("placeholder")) {
+            const expectedSig = crypto
+                .createHmac("sha256", mpSecret)
+                .update(rawBody)
+                .digest("hex");
+
+            const a = Buffer.from(sentSig, "utf8");
+            const b = Buffer.from(expectedSig, "utf8");
+            if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+                console.warn("[MoneyPings Webhook] Invalid signature received.");
+                return res.status(401).json({ error: "Invalid signature" });
+            }
+        }
+
+        // 2. Acknowledge quickly — MoneyPings times out after 10 seconds
+        res.status(200).json({ ok: true });
+
+        const event = req.body?.event;
+        const data = req.body?.data;
+
+        // 3. Only act on wallet.credited — ignore all other events
+        if (event !== "wallet.credited" || !data) {
+            console.log(`[MoneyPings Webhook] Ignoring event: ${event}`);
+            return;
+        }
+
+        // 4. Idempotency — deduplicate by MoneyPings webhook ID (whk_…)
+        if (webhookId) {
+            const already = await prisma.walletTransaction.findFirst({
+                where: {
+                    metadata: { path: ["moneypingsWebhookId"], equals: webhookId }
+                }
+            });
+            if (already) {
+                console.log(`[MoneyPings Webhook] Duplicate delivery ${webhookId} — skipping.`);
+                return;
+            }
+        }
+
+        // 5. Parse amount — MoneyPings uses integer kobo in amount_minor
+        const amountMinor: number = data.entry?.amount_minor ?? 0;
+        const amountInNgn = amountMinor / 100;
+        // external_reference is the Papa Ego customer ID we sent when creating the wallet
+        const externalRef: string = data.external_reference ?? "";
+        const walletRef: string = data.wallet_reference ?? "";
+        const entryRef: string = data.entry?.reference ?? "";
+
+        if (!amountMinor || amountInNgn <= 0) {
+            console.warn("[MoneyPings Webhook] Missing or zero amount — ignoring.");
+            return;
+        }
+
+        // 6. Find the Papa Ego customer
+        // external_reference is set to our customerId when we open the MoneyPings wallet
+        let customer = externalRef
+            ? await prisma.customer.findUnique({ where: { id: externalRef } })
+            : null;
+
+        // Fallback: look up by stored walletRef in customer metadata
+        if (!customer && walletRef) {
+            customer = await prisma.customer.findFirst({
+                where: {
+                    metadata: { path: ["moneypingsWalletRef"], equals: walletRef }
+                }
+            });
+        }
+
+        if (!customer) {
+            console.warn(`[MoneyPings Webhook] No customer found for external_reference=${externalRef} wallet=${walletRef}`);
+            return;
+        }
+
+        // 7. Credit the internal ledger wallet
+        const updatedWallet = await creditWallet(
+            customer.id,
+            amountInNgn,
+            "DEPOSIT",
+            {
+                description: `MoneyPings Deposit (${entryRef || walletRef})`,
+                actorId: customer.userId || "SYSTEM",
+                metadata: {
+                    reference: entryRef,
+                    walletReference: walletRef,
+                    externalReference: externalRef,
+                    channel: "MONEYPINGS_WEBHOOK",
+                    moneypingsWebhookId: webhookId,
+                    verifiedAt: new Date().toISOString(),
+                    narration: data.entry?.narration ?? ""
+                }
+            }
+        );
+
+        // 8. Create a DepositRequest record so it appears on the admin Deposits page
+        const depositRecord = await prisma.depositRequest.create({
+            data: {
+                customerId: customer.id,
+                amount: amountInNgn,
+                currency: "NGN",
+                method: "MONEYPINGS",
+                reference: entryRef || webhookId,
+                note: `Auto-approved via MoneyPings webhook (${data.entry?.narration ?? "wallet.credited"})`,
+                status: "APPROVED",
+                creditedAmount: amountInNgn,
+                reviewedBy: "SYSTEM",
+                reviewedAt: new Date(),
+            }
+        });
+
+        // 9. Audit log
+        await prisma.auditLog.create({
+            data: {
+                actorId: customer.userId || customer.id,
+                role: "ADMIN",
+                action: "MONEYPINGS_WEBHOOK_DEPOSIT_CREDITED",
+                entity: "DepositRequest",
+                entityId: depositRecord.id,
+                ip: "webhook",
+                metadata: {
+                    reference: entryRef,
+                    walletReference: walletRef,
+                    amount: amountInNgn,
+                    amountMinor,
+                    channel: "MONEYPINGS_WEBHOOK",
+                    moneypingsWebhookId: webhookId
+                }
+            }
+        });
+
+        console.log(`[MoneyPings Webhook] Credited NGN ${amountInNgn.toLocaleString()} to customer ${customer.id} (Entry: ${entryRef})`);
+    } catch (err: any) {
+        console.error("[MoneyPings Webhook] Error processing event:", err);
+        // Response already sent — don't try to send again
+    }
+});
+
 router.post("/payment", async (req: Request, res: Response) => {
     const signature = req.headers["x-signature"] as string;
     const rawBody = (req as any).rawBody; // Need to ensure rawBody is available

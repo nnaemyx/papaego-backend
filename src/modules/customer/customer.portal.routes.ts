@@ -1342,6 +1342,186 @@ router.post("/wallet/paystack/verify", async (req: Request, res: Response) => {
     }
 });
 
+// ─── MoneyPings Direct Deposit ─────────────────────────────────────────────
+
+/**
+ * POST /wallet/moneypings/init-wallet
+ * Ensures a MoneyPings wallet exists for this customer.
+ * Idempotent: calling twice with the same customer ID returns the same wallet.
+ * Stores the returned wallet_reference back on the Customer record so the
+ * webhook handler can look it up later.
+ */
+router.post("/wallet/moneypings/init-wallet", async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        const customer = user.customer || await prisma.customer.findUnique({ where: { userId: user.id } });
+
+        if (!customer) {
+            return res.status(404).json({ error: "Customer record not found" });
+        }
+
+        const mpKey = process.env.MONEYPINGS_API_KEY;
+        if (!mpKey || mpKey.includes("placeholder")) {
+            return res.status(503).json({ error: "MoneyPings integration is not yet configured" });
+        }
+
+        const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
+        const holderEmail = (dbUser?.email || user.email || customer.email || "").trim();
+        const holderName = [dbUser?.firstName, dbUser?.lastName].filter(Boolean).join(" ") || customer.name || "Papa Ego Customer";
+        const holderPhone = customer.phone || dbUser?.phone || "";
+
+        const response = await fetch("https://moneypings.com/api/partner/wallets", {
+            method: "POST",
+            headers: {
+                "X-API-Key": mpKey,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                external_reference: customer.id,  // our stable customer ID
+                holder_name: holderName,
+                holder_email: holderEmail,
+                holder_phone: holderPhone || undefined,
+                currency: "NGN"
+            })
+        });
+
+        const result: any = await response.json();
+
+        if (!response.ok && response.status !== 200) {
+            console.error("[MoneyPings] Wallet creation failed:", result);
+            return res.status(502).json({ error: "Failed to create MoneyPings wallet", details: result?.message });
+        }
+
+        const walletRef: string = result.data?.wallet_reference ?? "";
+
+        // Persist the MoneyPings wallet reference on the customer record for webhook lookups
+        if (walletRef) {
+            await prisma.customer.update({
+                where: { id: customer.id },
+                data: {
+                    metadata: {
+                        ...(typeof customer.metadata === "object" && customer.metadata !== null ? customer.metadata as object : {}),
+                        moneypingsWalletRef: walletRef
+                    }
+                }
+            });
+        }
+
+        return res.json({
+            walletReference: walletRef,
+            externalReference: result.data?.external_reference,
+            status: result.data?.status,
+            balanceMinor: result.data?.balance_minor,
+            balance: result.data?.balance,
+            message: result.message
+        });
+    } catch (error) {
+        console.error("[MoneyPings] Error initialising wallet:", error);
+        return res.status(500).json({ error: "Failed to initialise MoneyPings wallet" });
+    }
+});
+
+/**
+ * POST /wallet/moneypings/pay-in
+ * Generates a temporary virtual bank account for a customer to pay into.
+ * The account is tied to a single payment and expires in ~5 hours.
+ * Body: { amount: number }  — NGN, e.g. 500 means ₦500
+ */
+router.post("/wallet/moneypings/pay-in", async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        const customer = user.customer || await prisma.customer.findUnique({ where: { userId: user.id } });
+
+        if (!customer) {
+            return res.status(404).json({ error: "Customer record not found" });
+        }
+
+        const { amount } = req.body;
+        if (!amount || Number(amount) <= 0) {
+            return res.status(400).json({ error: "Valid amount is required" });
+        }
+
+        const mpKey = process.env.MONEYPINGS_API_KEY;
+        if (!mpKey || mpKey.includes("placeholder")) {
+            return res.status(503).json({ error: "MoneyPings integration is not yet configured" });
+        }
+
+        // Resolve the MoneyPings wallet reference for this customer
+        const meta: any = customer.metadata ?? {};
+        let walletRef: string = meta.moneypingsWalletRef ?? "";
+
+        // If we don't have one yet, auto-create the wallet first
+        if (!walletRef) {
+            const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
+            const holderEmail = (dbUser?.email || user.email || customer.email || "").trim();
+            const holderName = [dbUser?.firstName, dbUser?.lastName].filter(Boolean).join(" ") || customer.name || "Papa Ego Customer";
+
+            const initRes = await fetch("https://moneypings.com/api/partner/wallets", {
+                method: "POST",
+                headers: { "X-API-Key": mpKey, "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    external_reference: customer.id,
+                    holder_name: holderName,
+                    holder_email: holderEmail,
+                    currency: "NGN"
+                })
+            });
+            const initData: any = await initRes.json();
+            walletRef = initData.data?.wallet_reference ?? "";
+
+            if (walletRef) {
+                await prisma.customer.update({
+                    where: { id: customer.id },
+                    data: {
+                        metadata: {
+                            ...(typeof customer.metadata === "object" && customer.metadata !== null ? customer.metadata as object : {}),
+                            moneypingsWalletRef: walletRef
+                        }
+                    }
+                });
+            }
+        }
+
+        if (!walletRef) {
+            return res.status(502).json({ error: "Could not resolve MoneyPings wallet for this customer" });
+        }
+
+        // Amount in kobo (MoneyPings prefers integer kobo via amount_minor)
+        const amountMinor = Math.round(Number(amount) * 100);
+        const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
+        const email = (dbUser?.email || user.email || customer.email || "customer@papaego.com").trim();
+
+        const payInRes = await fetch(`https://moneypings.com/api/partner/wallets/${walletRef}/pay-in`, {
+            method: "POST",
+            headers: { "X-API-Key": mpKey, "Content-Type": "application/json" },
+            body: JSON.stringify({ amount_minor: amountMinor, email })
+        });
+
+        const payInData: any = await payInRes.json();
+
+        if (!payInRes.ok) {
+            console.error("[MoneyPings] Pay-in account generation failed:", payInData);
+            return res.status(502).json({ error: "Failed to generate pay-in account", details: payInData?.message });
+        }
+
+        return res.json({
+            accountNumber: payInData.data?.account_number,
+            accountName: payInData.data?.account_name,
+            bankName: payInData.data?.bank_name,
+            amount: payInData.data?.amount,
+            amountMinor: payInData.data?.amount_minor,
+            currency: payInData.data?.currency,
+            expiresAt: payInData.data?.expires_at,
+            reference: payInData.data?.reference,
+            walletReference: payInData.data?.wallet_reference,
+            notice: payInData.data?.notice
+        });
+    } catch (error) {
+        console.error("[MoneyPings] Error generating pay-in account:", error);
+        return res.status(500).json({ error: "Failed to generate pay-in account" });
+    }
+});
+
 // --- Wallet & Deposits ---
 router.get("/wallet", getMyWallet);
 router.post("/wallet/deposits", uploadToCloudinary.single("proof"), createDepositRequest);

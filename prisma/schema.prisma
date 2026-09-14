@@ -225,6 +225,9 @@ model Customer {
   referralCode     String?
   referralType     String? // AGENT | CORPORATE | DIRECT
 
+  // Flexible key-value store (e.g. MoneyPings wallet reference)
+  metadata         Json?
+
   user               User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   notes              CustomerNote[]
   documents          CustomerDocument[]
