@@ -32,6 +32,7 @@ import {
     upsertFxRate,
     updateFxRate,
     deleteFxRate,
+    createAdminTransaction,
 } from "./admin.controller";
 import { freezeCommission, unfreezeCommission } from "./admin.trade.controller";
 import {
@@ -116,6 +117,7 @@ router.patch("/customers/:id/kyc/reject", rejectKyc);
 
 // ── Transactions ─────────────────────────────────────────────────────────────
 router.get("/transactions", listAllTrades);
+router.post("/transactions", createAdminTransaction);
 router.get("/transactions/:id", getAdminTransaction);
 router.delete("/transactions/:id", deleteTransaction);
 router.patch("/transactions/:id/freeze", freezeCommission);

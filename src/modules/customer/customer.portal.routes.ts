@@ -1361,8 +1361,18 @@ router.post("/wallet/moneypings/init-wallet", async (req: Request, res: Response
         }
 
         const mpKey = process.env.MONEYPINGS_API_KEY;
-        if (!mpKey || mpKey.includes("placeholder")) {
-            return res.status(503).json({ error: "MoneyPings integration is not yet configured" });
+        const isSimulated = !mpKey || mpKey.includes("placeholder") || mpKey.includes("your_moneypings");
+
+        if (isSimulated) {
+            const simulatedRef = `mp_wal_sim_${customer.id.slice(0, 8)}`;
+            return res.json({
+                walletReference: simulatedRef,
+                externalReference: customer.id,
+                status: "ACTIVE",
+                balanceMinor: 0,
+                balance: 0,
+                message: "Simulated MoneyPings wallet (pending live partner API key)"
+            });
         }
 
         const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
@@ -1385,11 +1395,14 @@ router.post("/wallet/moneypings/init-wallet", async (req: Request, res: Response
             })
         });
 
-        const result: any = await response.json();
+        const result: any = await response.json().catch(() => ({}));
 
         if (!response.ok && response.status !== 200) {
-            console.error("[MoneyPings] Wallet creation failed:", result);
-            return res.status(502).json({ error: "Failed to create MoneyPings wallet", details: result?.message });
+            console.error("[MoneyPings] Wallet creation failed:", response.status, result);
+            return res.status(502).json({
+                error: "Failed to create MoneyPings wallet",
+                details: result?.message || result?.error || `HTTP ${response.status}`
+            });
         }
 
         const walletRef: string = result.data?.wallet_reference ?? "";
@@ -1442,8 +1455,27 @@ router.post("/wallet/moneypings/pay-in", async (req: Request, res: Response) => 
         }
 
         const mpKey = process.env.MONEYPINGS_API_KEY;
-        if (!mpKey || mpKey.includes("placeholder")) {
-            return res.status(503).json({ error: "MoneyPings integration is not yet configured" });
+        const isSimulated = !mpKey || mpKey.includes("placeholder") || mpKey.includes("your_moneypings");
+
+        // If no live MoneyPings API key is configured yet, provide a realistic sandbox simulation
+        if (isSimulated) {
+            const timestamp = Date.now();
+            const randomAccount = "99" + Math.floor(10000000 + Math.random() * 90000000).toString();
+            const reference = `MP-SIM-${timestamp.toString().slice(-6)}`;
+            const expiry = new Date(Date.now() + 5 * 3600 * 1000).toISOString();
+
+            return res.json({
+                accountNumber: randomAccount,
+                accountName: `PapaEgo / ${customer.fullName || customer.name || "Customer"}`,
+                bankName: "Providus Bank",
+                amount: Number(amount),
+                amountMinor: Math.round(Number(amount) * 100),
+                currency: "NGN",
+                expiresAt: expiry,
+                reference,
+                walletReference: `mp_wal_sim_${customer.id.slice(0, 8)}`,
+                notice: "Sandbox Simulated Account. Provide your MONEYPINGS_API_KEY in .env to activate live account generation."
+            });
         }
 
         // Resolve the MoneyPings wallet reference for this customer
@@ -1454,7 +1486,7 @@ router.post("/wallet/moneypings/pay-in", async (req: Request, res: Response) => 
         if (!walletRef) {
             const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
             const holderEmail = (dbUser?.email || user.email || customer.email || "").trim();
-            const holderName = [dbUser?.firstName, dbUser?.lastName].filter(Boolean).join(" ") || customer.name || "Papa Ego Customer";
+            const holderName = [dbUser?.firstName, dbUser?.lastName].filter(Boolean).join(" ") || customer.fullName || customer.name || "Papa Ego Customer";
 
             const initRes = await fetch("https://moneypings.com/api/partner/wallets", {
                 method: "POST",
@@ -1466,7 +1498,7 @@ router.post("/wallet/moneypings/pay-in", async (req: Request, res: Response) => 
                     currency: "NGN"
                 })
             });
-            const initData: any = await initRes.json();
+            const initData: any = await initRes.json().catch(() => ({}));
             walletRef = initData.data?.wallet_reference ?? "";
 
             if (walletRef) {
@@ -1479,11 +1511,13 @@ router.post("/wallet/moneypings/pay-in", async (req: Request, res: Response) => 
                         }
                     }
                 });
+            } else {
+                console.error("[MoneyPings] Could not create wallet for customer:", initRes.status, initData);
+                return res.status(502).json({
+                    error: "Could not resolve MoneyPings wallet for this customer",
+                    details: initData?.message || initData?.error || `MoneyPings API returned HTTP ${initRes.status}`
+                });
             }
-        }
-
-        if (!walletRef) {
-            return res.status(502).json({ error: "Could not resolve MoneyPings wallet for this customer" });
         }
 
         // Amount in kobo (MoneyPings prefers integer kobo via amount_minor)
@@ -1497,11 +1531,14 @@ router.post("/wallet/moneypings/pay-in", async (req: Request, res: Response) => 
             body: JSON.stringify({ amount_minor: amountMinor, email })
         });
 
-        const payInData: any = await payInRes.json();
+        const payInData: any = await payInRes.json().catch(() => ({}));
 
         if (!payInRes.ok) {
-            console.error("[MoneyPings] Pay-in account generation failed:", payInData);
-            return res.status(502).json({ error: "Failed to generate pay-in account", details: payInData?.message });
+            console.error("[MoneyPings] Pay-in account generation failed:", payInRes.status, payInData);
+            return res.status(502).json({
+                error: "Failed to generate pay-in account",
+                details: payInData?.message || payInData?.error || `MoneyPings API returned HTTP ${payInRes.status}`
+            });
         }
 
         return res.json({

@@ -150,32 +150,48 @@ router.post("/moneypings", async (req: Request, res: Response) => {
         const mpSecret = process.env.MONEYPINGS_WEBHOOK_SECRET;
         const sentSig = (req.headers["x-webhook-signature"] as string) || "";
         const webhookId = (req.headers["x-webhook-id"] as string) || "";
-        const rawBody = (req as any).rawBody || JSON.stringify(req.body);
+        const webhookEvent = (req.headers["x-webhook-event"] as string) || req.body?.event || "";
+        const webhookTimestamp = (req.headers["x-webhook-timestamp"] as string) || "";
+        const rawBody = (req as any).rawBody !== undefined ? (req as any).rawBody : JSON.stringify(req.body || {});
 
-        // 1. Verify HMAC-SHA256 signature (constant-time compare)
-        if (mpSecret && !mpSecret.includes("placeholder")) {
-            const expectedSig = crypto
-                .createHmac("sha256", mpSecret)
-                .update(rawBody)
-                .digest("hex");
-
-            const a = Buffer.from(sentSig, "utf8");
-            const b = Buffer.from(expectedSig, "utf8");
-            if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-                console.warn("[MoneyPings Webhook] Invalid signature received.");
-                return res.status(401).json({ error: "Invalid signature" });
-            }
+        // 1. Mandatory Header Check: Signature must be present
+        if (!sentSig) {
+            console.warn(`[MoneyPings Webhook] Missing X-Webhook-Signature header. WebhookId: ${webhookId || "none"}`);
+            return res.status(401).json({ error: "Missing X-Webhook-Signature header" });
         }
 
-        // 2. Acknowledge quickly — MoneyPings times out after 10 seconds
+        // 2. Secret Configuration Check
+        if (!mpSecret || mpSecret.includes("placeholder") || mpSecret.includes("your_moneypings")) {
+            console.error("[MoneyPings Webhook] MONEYPINGS_WEBHOOK_SECRET is not configured on server.");
+            return res.status(500).json({ error: "Webhook secret not configured on server" });
+        }
+
+        // 3. Constant-time HMAC-SHA256 verification against raw body
+        const expectedSig = crypto
+            .createHmac("sha256", mpSecret)
+            .update(rawBody)
+            .digest("hex")
+            .toLowerCase();
+
+        const a = Buffer.from(sentSig.trim().toLowerCase(), "utf8");
+        const b = Buffer.from(expectedSig, "utf8");
+
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+            console.warn(`[MoneyPings Webhook] Invalid signature received. WebhookId: ${webhookId}`);
+            return res.status(401).json({ error: "Invalid signature" });
+        }
+
+        console.log(`[MoneyPings Webhook] Verified signature successfully. WebhookId: ${webhookId}, Event: ${webhookEvent}, Timestamp: ${webhookTimestamp}`);
+
+        // 4. Acknowledge verified delivery quickly (MoneyPings times out after 10s)
         res.status(200).json({ ok: true });
 
-        const event = req.body?.event;
+        const event = webhookEvent;
         const data = req.body?.data;
 
-        // 3. Only act on wallet.credited — ignore all other events
+        // 5. Only act on wallet.credited — ignore all other events (e.g. webhook.test)
         if (event !== "wallet.credited" || !data) {
-            console.log(`[MoneyPings Webhook] Ignoring event: ${event}`);
+            console.log(`[MoneyPings Webhook] Acknowledged non-funding event: ${event} (ID: ${webhookId})`);
             return;
         }
 

@@ -9,7 +9,7 @@
 import prisma from "../../config/db";
 
 export async function getBankingProfile(organizationId: string) {
-    const profile = await prisma.bankingProfile.findUnique({
+    let profile = await prisma.bankingProfile.findUnique({
         where: { organizationId },
         include: {
             bankAccount: {
@@ -22,6 +22,45 @@ export async function getBankingProfile(organizationId: string) {
             }
         }
     });
+
+    if (!profile) {
+        // Check if bankAccount exists
+        const bankAccount = await prisma.bankAccount.findUnique({
+            where: { organizationId },
+            include: {
+                events: {
+                    orderBy: { createdAt: "desc" },
+                    take: 10
+                }
+            }
+        });
+
+        if (bankAccount && bankAccount.accountNumber !== "PENDING") {
+            profile = await prisma.bankingProfile.create({
+                data: {
+                    organizationId,
+                    bankAccountId: bankAccount.id,
+                    bankName: bankAccount.bankName,
+                    accountHolder: bankAccount.accountHolder,
+                    maskedAccountNumber: `•••• ${bankAccount.accountNumber.slice(-4)}`,
+                    accountNumber: bankAccount.accountNumber,
+                    routingNumber: bankAccount.routingNumber,
+                    currency: bankAccount.currency,
+                    status: bankAccount.status
+                },
+                include: {
+                    bankAccount: {
+                        include: {
+                            events: {
+                                orderBy: { createdAt: "desc" },
+                                take: 10
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
 
     if (!profile) {
         return null;

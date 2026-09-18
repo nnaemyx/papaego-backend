@@ -1222,3 +1222,100 @@ export async function deleteFxRate(req: Request, res: Response) {
         res.status(500).json({ error: "Failed to delete FX rate" });
     }
 }
+
+/**
+ * POST /api/admin/transactions
+ * Create a new payment obligation (Trade) from Admin
+ */
+export async function createAdminTransaction(req: Request, res: Response) {
+    try {
+        const {
+            customerId,
+            recipientName,
+            supplierBankName,
+            supplierAccountNumber,
+            swiftBic,
+            destinationCountry,
+            sendCurrency = "NGN",
+            receiveCurrency = "USD",
+            amount,
+            fxRate,
+            payoutAmount,
+            route = "FV_BANK_GMA",
+            status = "AWAITING_PAYMENT",
+            dueDate,
+            purpose
+        } = req.body;
+
+        if (!customerId) {
+            return res.status(400).json({ error: "Customer is required" });
+        }
+        if (!amount || Number(amount) <= 0) {
+            return res.status(400).json({ error: "Valid amount is required" });
+        }
+
+        const customer = await prisma.customer.findUnique({
+            where: { id: customerId },
+            include: { user: true }
+        });
+
+        if (!customer) {
+            return res.status(404).json({ error: "Customer not found" });
+        }
+
+        const adminUser = (req as any).user;
+        const agentId = customer.referringAgentId || adminUser?.id || "SYSTEM";
+
+        const trade = await prisma.trade.create({
+            data: {
+                customerId: customer.id,
+                agentId: agentId,
+                tradeType: "BUY",
+                sendCurrency,
+                receiveCurrency,
+                amount: amount.toString(),
+                payoutAmount: (payoutAmount || amount).toString(),
+                fxRate: fxRate ? fxRate.toString() : null,
+                status: status === "READY_FOR_ROUTING" ? "PAYMENT_CONFIRMED" : "AWAITING_PAYMENT",
+                recipientName: recipientName || "Corporate Beneficiary",
+                recipientDetails: JSON.stringify({
+                    bankName: supplierBankName,
+                    accountNumber: supplierAccountNumber,
+                    swiftBic,
+                    country: destinationCountry,
+                    route,
+                    dueDate: dueDate || new Date().toISOString(),
+                    purpose: purpose || "Supplier cross-border payment obligation"
+                }),
+                supplierBusinessName: recipientName,
+                supplierBankName: supplierBankName,
+                supplierAccountNumber: supplierAccountNumber,
+                paymentMethod: route,
+                payoutMethod: route
+            }
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                actorId: adminUser?.id || "ADMIN",
+                role: "ADMIN",
+                action: "CREATE_PAYMENT_OBLIGATION",
+                entity: "Trade",
+                entityId: trade.id,
+                ip: req.ip || "127.0.0.1",
+                metadata: {
+                    customerId,
+                    amount,
+                    currency: receiveCurrency,
+                    route,
+                    recipientName
+                }
+            }
+        });
+
+        return res.status(201).json({ success: true, trade });
+    } catch (error: any) {
+        console.error("Error creating payment obligation:", error);
+        return res.status(500).json({ error: "Failed to create payment obligation", details: error.message });
+    }
+}

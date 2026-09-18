@@ -70,9 +70,10 @@ export async function checkBankingEligibility(organizationId: string): Promise<E
     const kybApproved = org.kybRequest !== null && org.kybRequest.status === "APPROVED" && kybNotExpired;
 
 
-    // No existing active or creating managed bank account
+    // No existing active managed bank account (ignore in-flight uncompleted placeholder)
     const existingAcc = org.bankAccount;
-    const noExistingActiveAccount = !existingAcc || existingAcc.status === "CLOSED";
+    const isPendingPlaceholder = Boolean(existingAcc && existingAcc.status === "PENDING_CREATION" && existingAcc.accountNumber === "PENDING");
+    const noExistingActiveAccount = Boolean(!existingAcc || existingAcc.status === "CLOSED" || isPendingPlaceholder);
 
     // Build human-readable failure reasons
     if (!organizationActive) {

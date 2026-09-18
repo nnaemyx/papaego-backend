@@ -17,12 +17,38 @@ import {
 } from "./banking.notification.service";
 
 export async function provisionManagedAccount(organizationId: string, userId: string) {
-    // 0. Acquire a provisioning lock so two concurrent requests can never
-    //    create two managed accounts for the same organization. We attempt an
-    //    atomic "claim" by creating a placeholder BankAccount row that is
-    //    protected by the unique(organizationId) constraint.
-    let claimed = false;
-    try {
+    // 1. Run strict eligibility validation first
+    const eligibility = await checkBankingEligibility(organizationId);
+    if (!eligibility.isEligible) {
+        throw new Error(`Account provisioning blocked: ${eligibility.reasons.join(" | ")}`);
+    }
+
+    const org = eligibility.organization;
+
+    // 2. Check if a valid managed account already exists
+    const existing = await prisma.bankAccount.findUnique({ where: { organizationId } });
+    if (existing && existing.status === "ACTIVE" && existing.accountNumber !== "PENDING") {
+        let existingProfile = await prisma.bankingProfile.findUnique({ where: { organizationId } });
+        if (!existingProfile) {
+            existingProfile = await prisma.bankingProfile.create({
+                data: {
+                    organizationId: org.id,
+                    bankAccountId: existing.id,
+                    bankName: existing.bankName,
+                    accountHolder: existing.accountHolder,
+                    maskedAccountNumber: `•••• ${existing.accountNumber.slice(-4)}`,
+                    accountNumber: existing.accountNumber,
+                    routingNumber: existing.routingNumber,
+                    currency: existing.currency,
+                    status: existing.status
+                }
+            });
+        }
+        return { bankAccount: existing, bankingProfile: existingProfile };
+    }
+
+    // 3. Acquire slot or reuse uncompleted claim
+    if (!existing) {
         await prisma.bankAccount.create({
             data: {
                 organizationId,
@@ -32,40 +58,21 @@ export async function provisionManagedAccount(organizationId: string, userId: st
                 status: "PENDING_CREATION"
             }
         });
-        claimed = true;
-    } catch (err: any) {
-        // Unique constraint violation → an account (or in-flight claim) already exists
-        const existing = await prisma.bankAccount.findUnique({ where: { organizationId } });
-        if (existing && existing.status !== "CLOSED") {
-            throw new Error(
-                `Account provisioning blocked: Organization already has a managed bank account (Status: ${existing.status}).`
-            );
-        }
-        // If it was a CLOSED account, reuse the slot by claiming it
-        if (existing && existing.status === "CLOSED") {
-            await prisma.bankAccount.update({
-                where: { organizationId },
-                data: { status: "PENDING_CREATION" }
-            });
-            claimed = true;
-        } else {
-            throw err;
-        }
+    } else if (existing.status === "CLOSED" || (existing.status === "PENDING_CREATION" && existing.accountNumber === "PENDING")) {
+        await prisma.bankAccount.update({
+            where: { organizationId },
+            data: {
+                accountNumber: "PENDING",
+                routingNumber: "PENDING",
+                accountHolder: "PENDING",
+                status: "PENDING_CREATION"
+            }
+        });
+    } else {
+        throw new Error(
+            `Account provisioning blocked: Organization already has a managed bank account (Status: ${existing.status}).`
+        );
     }
-
-    // 1. Run strict eligibility validation
-    const eligibility = await checkBankingEligibility(organizationId);
-    if (!eligibility.isEligible) {
-        // Roll back our claim so a retry is possible once prerequisites are met
-        if (claimed) {
-            await prisma.bankAccount.deleteMany({
-                where: { organizationId, status: "PENDING_CREATION", fvAccountId: null }
-            }).catch(() => { /* ignore */ });
-        }
-        throw new Error(`Account provisioning blocked: ${eligibility.reasons.join(" | ")}`);
-    }
-
-    const org = eligibility.organization;
 
     // 2. Notify customer that account creation is PENDING
     await notifyProvisioningPending({
