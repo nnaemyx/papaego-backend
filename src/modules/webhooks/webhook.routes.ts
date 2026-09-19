@@ -157,19 +157,27 @@ router.post("/moneypings", async (req: Request, res: Response) => {
         // 1. Mandatory Header Check: Signature must be present
         if (!sentSig) {
             console.warn(`[MoneyPings Webhook] Missing X-Webhook-Signature header. WebhookId: ${webhookId || "none"}`);
-            return res.status(401).json({ error: "Missing X-Webhook-Signature header" });
+            return res.status(401).json({ error: "bad signature" });
         }
 
-        // 2. Secret Configuration Check
+        // 2. Secret Configuration Check (fail-closed if secret missing)
         if (!mpSecret || mpSecret.includes("placeholder") || mpSecret.includes("your_moneypings")) {
             console.error("[MoneyPings Webhook] MONEYPINGS_WEBHOOK_SECRET is not configured on server.");
-            return res.status(500).json({ error: "Webhook secret not configured on server" });
+            return res.status(401).json({ error: "bad signature" });
         }
 
         // 3. Constant-time HMAC-SHA256 verification against raw body
+        const rawBytes = Buffer.isBuffer((req as any).rawBody)
+            ? (req as any).rawBody
+            : typeof (req as any).rawBody === "string"
+            ? Buffer.from((req as any).rawBody, "utf8")
+            : Buffer.isBuffer(req.body)
+            ? req.body
+            : Buffer.from(JSON.stringify(req.body || {}), "utf8");
+
         const expectedSig = crypto
             .createHmac("sha256", mpSecret)
-            .update(rawBody)
+            .update(rawBytes)
             .digest("hex")
             .toLowerCase();
 
@@ -178,10 +186,28 @@ router.post("/moneypings", async (req: Request, res: Response) => {
 
         if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
             console.warn(`[MoneyPings Webhook] Invalid signature received. WebhookId: ${webhookId}`);
-            return res.status(401).json({ error: "Invalid signature" });
+            return res.status(401).json({ error: "bad signature" });
         }
 
         console.log(`[MoneyPings Webhook] Verified signature successfully. WebhookId: ${webhookId}, Event: ${webhookEvent}, Timestamp: ${webhookTimestamp}`);
+
+        // Record verified webhook receipt in AuditLog for confirmation & audit trail
+        await prisma.auditLog.create({
+            data: {
+                actorId: "SYSTEM",
+                role: "ADMIN",
+                action: "MONEYPINGS_WEBHOOK_DELIVERY_RECEIVED",
+                entity: "WebhookDelivery",
+                entityId: webhookId || "whk_unidentified",
+                ip: req.ip || "moneypings",
+                metadata: {
+                    webhookId,
+                    event: webhookEvent,
+                    timestamp: webhookTimestamp,
+                    verified: true
+                }
+            }
+        }).catch(() => {});
 
         // 4. Acknowledge verified delivery quickly (MoneyPings times out after 10s)
         res.status(200).json({ ok: true });

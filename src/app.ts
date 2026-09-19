@@ -9,6 +9,7 @@ import { startRateExpiryJob } from "./jobs/fx.expiry";
 
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
+import webhookRoutes from "./modules/webhooks/webhook.routes";
 
 const app = express();
 
@@ -58,6 +59,8 @@ app.use(express.json({
     }
 }));
 app.use("/api", routes);
+app.use("/hooks", webhookRoutes);
+app.use("/webhooks", webhookRoutes);
 
 app.use(errorHandler);
 
