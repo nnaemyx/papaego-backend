@@ -1,32 +1,56 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../../config/db";
-import { verifyWebhookSignature, FvApplicationResponse } from "./fvbank.adapter";
+import { verifyWebhookSignature as verifyDuckCheckSignature } from "./duckcheck.adapter";
+import { verifyWebhookSignature as verifyFvBankSignature, FvApplicationResponse } from "./fvbank.adapter";
 import { recordStatusChange, mapFvBankStatus, validateStatusTransition } from "./status.service";
 
 // ─────────────────────────────────────────────────────
-// Inbound webhook from FV Bank
+// Inbound webhook from DuckCheck / Compliance Partner
 // POST /compliance/webhook
 // ─────────────────────────────────────────────────────
 export async function handleFvBankWebhook(req: Request, res: Response, next: NextFunction) {
     try {
         const rawBody = (req as any).rawBody as string;
-        const signature = req.headers["x-fvbank-signature"] as string || "";
+        const signature = (req.headers["x-duckcheck-signature"] || req.headers["x-signature"] || req.headers["x-fvbank-signature"]) as string || "";
 
-        // 1. Verify HMAC signature
-        if (!verifyWebhookSignature(rawBody, signature)) {
-            console.warn("⚠️  Invalid webhook signature — rejecting.");
+        // 1. Verify HMAC signature (DuckCheck first, then FV Bank adapter fallback)
+        const isDcValid = verifyDuckCheckSignature(rawBody, signature);
+        const isFvValid = !process.env.DUCKCHECK_WEBHOOK_SECRET && verifyFvBankSignature(rawBody, signature);
+
+        if (!isDcValid && !isFvValid) {
+            console.warn("⚠️  Invalid compliance webhook signature — rejecting.");
             return res.status(401).json({ error: "Invalid webhook signature." });
         }
 
-        const payload = req.body;
-        const { event, applicationId, applicationType, status, rejectionReason, additionalInfoNote, partnerOrgId } = payload;
+        const payload = req.body || {};
 
-        if (!event || !applicationId || !applicationType) {
-            return res.status(400).json({ error: "Missing required webhook fields: event, applicationId, applicationType." });
+        // Parse DuckCheck & compliance partner payloads:
+        // KYC: { sessionId: "...", status: "approved" | "rejected", person: {...} }
+        // KYB: { requestId: "...", verificationResult: "APPROVED" | "REJECTED", eventType: "BUSINESS_VERIFICATION", reason: "..." }
+        let applicationType: "KYC" | "KYB" = payload.applicationType;
+        let applicationId: string = payload.applicationId || payload.sessionId || payload.requestId || payload.id;
+        let event: string = payload.event || payload.eventType || "VERIFICATION_DECISION";
+        let status: string = payload.status;
+        let rejectionReason: string = payload.rejectionReason || payload.reason;
+        let additionalInfoNote: string = payload.additionalInfoNote;
+        let partnerOrgId: string = payload.partnerOrgId;
+
+        if (payload.sessionId || payload.person) {
+            applicationType = "KYC";
+            applicationId = payload.sessionId;
+            status = payload.status === "approved" ? "APPROVED" : payload.status === "rejected" ? "REJECTED" : payload.status;
+        } else if (payload.eventType === "BUSINESS_VERIFICATION" || payload.verificationResult || payload.documentResults) {
+            applicationType = "KYB";
+            applicationId = payload.requestId || payload.id;
+            status = payload.verificationResult || (payload.status === "COMPLETED" ? "APPROVED" : payload.status);
+            rejectionReason = payload.reason || rejectionReason;
         }
 
-        // 2. Deduplicate: FV Bank may retry webhook delivery. Use a deterministic
-        // event key so the same event is never processed twice.
+        if (!applicationId || !applicationType) {
+            return res.status(400).json({ error: "Missing required webhook fields: could not identify applicationId or applicationType." });
+        }
+
+        // 2. Deduplicate: Use a deterministic event key so the same event is never processed twice.
         const eventKey: string = payload.eventId || payload.messageId ||
             `${event}:${applicationType}:${applicationId}:${status || "PROCESSING"}`;
 
@@ -42,11 +66,15 @@ export async function handleFvBankWebhook(req: Request, res: Response, next: Nex
             return res.status(200).json({ received: true, duplicate: true });
         }
 
+        let webhookEvent: any = applicationType === "KYC"
+            ? (status === "APPROVED" ? "KYC_APPROVED" : status === "REJECTED" ? "KYC_REJECTED" : "KYC_PROCESSING")
+            : (status === "APPROVED" ? "KYB_APPROVED" : status === "REJECTED" ? "KYB_REJECTED" : "KYB_PROCESSING");
+
         // 3. Store raw webhook for audit (tag with the dedup key)
         const webhook = await prisma.complianceWebhook.create({
             data: {
                 organizationId: partnerOrgId || null,
-                event,
+                event: webhookEvent,
                 payload: { ...payload, _eventKey: eventKey },
                 signature: signature || null
             }

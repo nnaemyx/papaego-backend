@@ -168,7 +168,9 @@ export function mapFvBankStatus(fvStatus: string): string {
         "APPROVED": "APPROVED",
         "REJECTED": "REJECTED",
         "EXPIRED": "EXPIRED",
-        "SUBMITTED": "SUBMITTED"
+        "SUBMITTED": "SUBMITTED",
+        "COMPLETED": "APPROVED",
+        "INITIAL": "SUBMITTED"
     };
-    return mapping[fvStatus.toUpperCase()] || "PROCESSING";
+    return mapping[(fvStatus || "").toUpperCase()] || "PROCESSING";
 }

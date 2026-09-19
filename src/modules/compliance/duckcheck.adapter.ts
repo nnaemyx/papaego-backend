@@ -43,19 +43,23 @@ let _tokenExpiresAt = 0;
 async function getAccessToken(): Promise<string> {
     if (STUB_MODE) return "stub_duckcheck_token";
 
+    // Direct token override if configured in .env
+    if (process.env.DUCKCHECK_ACCESS_TOKEN) return process.env.DUCKCHECK_ACCESS_TOKEN;
+
     const now = Math.floor(Date.now() / 1000);
     if (_cachedToken && _tokenExpiresAt > now + 60) return _cachedToken;
 
-    const body = new URLSearchParams({
-        grant_type:    "client_credentials",
-        client_id:     DUCKCHECK_CLIENT_ID,
-        client_secret: DUCKCHECK_CLIENT_SECRET,
-    });
+    // Per DuckCheck Postman docs: POST /v1/auth/token with Basic Auth (clientId:clientSecret)
+    const basicAuth = Buffer.from(`${DUCKCHECK_CLIENT_ID}:${DUCKCHECK_CLIENT_SECRET}`).toString("base64");
+    const authCode = process.env.DUCKCHECK_AUTH_CODE || "";
 
-    const res = await fetch(`${DUCKCHECK_BASE_URL}/oauth/token`, {
+    const res = await fetch(`${DUCKCHECK_BASE_URL}/v1/auth/token`, {
         method:  "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body:    body.toString(),
+        headers: {
+            "Content-Type":  "application/json",
+            "Authorization": `Basic ${basicAuth}`,
+        },
+        body: JSON.stringify({ authCode }),
     });
 
     if (!res.ok) {
@@ -64,10 +68,10 @@ async function getAccessToken(): Promise<string> {
     }
 
     const data: any = await res.json();
-    _cachedToken     = data.access_token;
-    _tokenExpiresAt  = now + (data.expires_in || 3600);
+    _cachedToken     = data.accessToken || data.access_token;
+    _tokenExpiresAt  = now + Math.floor((data.expireAt || 3600000) / 1000);
 
-    if (!_cachedToken) throw new Error("DuckCheck: missing access_token in auth response");
+    if (!_cachedToken) throw new Error("DuckCheck: missing accessToken in auth response");
     return _cachedToken;
 }
 
@@ -104,19 +108,21 @@ async function dcRequest<T>(method: string, path: string, body?: unknown): Promi
 function generateStubResponse(path: string): unknown {
     const stubId = `dc_stub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    if (path.includes("/kyc")) {
+    if (path.includes("/idv") || path.includes("/kyc")) {
         return {
             applicationId: stubId,
+            verificationId: stubId,
             status:        "PROCESSING",
-            message:       "KYC verification initiated (STUB MODE)",
+            message:       "KYC identity verification initiated (STUB MODE)",
             submittedAt:   new Date().toISOString(),
         };
     }
-    if (path.includes("/kyb")) {
+    if (path.includes("/business") || path.includes("/kyb")) {
         return {
             applicationId: stubId,
+            verificationId: stubId,
             status:        "PROCESSING",
-            message:       "KYB verification initiated (STUB MODE)",
+            message:       "KYB business verification initiated (STUB MODE)",
             submittedAt:   new Date().toISOString(),
         };
     }
@@ -125,13 +131,6 @@ function generateStubResponse(path: string): unknown {
             documentId: stubId,
             status:     "UPLOADED",
             message:    "Document received (STUB MODE)",
-        };
-    }
-    if (path.includes("/status") || path.includes("/" + stubId.split("_")[2])) {
-        return {
-            applicationId: stubId,
-            status:        "PROCESSING",
-            updatedAt:     new Date().toISOString(),
         };
     }
 
@@ -144,6 +143,8 @@ function generateStubResponse(path: string): unknown {
 export interface DcApplicationResponse {
     applicationId: string;
     status: string;
+    verificationId?: string;
+    url?: string;
     message?: string;
     submittedAt: string;
 }
@@ -168,43 +169,77 @@ export type FvDocumentResponse    = DcDocumentResponse;
 export type FvStatusResponse      = DcStatusResponse;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// KYC: Submit director / customer identity verification
+// KYC: Submit customer identity verification (IDV Session)
+// Per Postman endpoint: POST /v1/product/idv/session
 // ─────────────────────────────────────────────────────────────────────────────
 export interface DcKycPayload {
     partnerApplicationId: string;   // PapaEgo KycRequest.id
     fullName: string;
-    dateOfBirth: string;            // ISO date string  e.g. "1990-01-15"
+    dateOfBirth: string;            // ISO date string e.g. "1990-01-01"
     nationality: string;            // ISO-3166-1 alpha-2 e.g. "NG"
     residentialAddress: string;
     phone: string;
     email: string;
     idType: string;                 // "BVN" | "NIN" | "PASSPORT" | "DRIVERS_LICENSE"
-    idNumber?: string;              // The actual BVN/NIN/passport number
-    selfieUrl?: string;             // Cloudinary URL of uploaded selfie
+    idNumber?: string;              // The actual document value
+    selfieUrl?: string;             // Selfie URL
     partnerOrgId: string;
 }
 
-// Keep backward-compat alias for kyc.controller.ts
 export type FvKycPayload = DcKycPayload;
 
 export async function submitKycApplication(payload: DcKycPayload): Promise<DcApplicationResponse> {
-    return dcRequest<DcApplicationResponse>("POST", "/v1/kyc/verifications", {
-        reference:           payload.partnerApplicationId,
-        partner_org_id:      payload.partnerOrgId,
-        full_name:           payload.fullName,
-        date_of_birth:       payload.dateOfBirth,
-        nationality:         payload.nationality,
-        residential_address: payload.residentialAddress,
-        phone:               payload.phone,
-        email:               payload.email,
-        id_type:             payload.idType,
-        id_number:           payload.idNumber,
-        selfie_url:          payload.selfieUrl,
+    const parts = (payload.fullName || "").trim().split(" ");
+    const firstName = parts[0] || "Customer";
+    const lastName = parts.slice(1).join(" ") || firstName;
+
+    const identityTypeMapping: Record<string, string> = {
+        "NATIONAL_ID": "NIN",
+        "PASSPORT": "PASSPORT",
+        "DRIVERS_LICENSE": "DRIVERS_LICENSE",
+        "BVN": "NIN"
+    };
+
+    const webhookUrl = process.env.DUCKCHECK_CALLBACK_URL || process.env.WEBHOOK_BASE_URL
+        ? `${process.env.WEBHOOK_BASE_URL}/compliance/webhook`
+        : "https://api.papaego.com/compliance/webhook";
+
+    const response = await dcRequest<any>("POST", "/v1/product/idv/session", {
+        callBack: webhookUrl,
+        customer: {
+            firstName,
+            lastName,
+            dateOfBirth: payload.dateOfBirth?.split("T")[0] || "1990-01-01",
+            customerId: payload.partnerApplicationId,
+            fullAddress: payload.residentialAddress,
+            email: payload.email,
+        },
+        device: {
+            ipAddress: "127.0.0.1",
+            deviceFingerprint: "papaego-web"
+        },
+        document: {
+            value: payload.idNumber || "PENDING",
+            identityType: identityTypeMapping[payload.idType] || "PASSPORT",
+            country: payload.nationality?.length === 2 ? payload.nationality : "NG"
+        }
     });
+
+    const verificationId = response?.verificationId || response?.sessionId || response?.applicationId || `dc_kyc_${Date.now()}`;
+
+    return {
+        applicationId: verificationId,
+        verificationId,
+        status: response?.status || "SUBMITTED",
+        url: response?.url,
+        submittedAt: new Date().toISOString(),
+        message: "DuckCheck KYC session initiated"
+    };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// KYB: Submit corporate/business verification (CAC, directors, UBOs)
+// KYB: Submit corporate verification (Business Verification)
+// Per Postman endpoint: POST /v1/product/business/verification
 // ─────────────────────────────────────────────────────────────────────────────
 export interface DcKybPayload {
     partnerApplicationId: string;   // PapaEgo KybRequest.id
@@ -213,26 +248,59 @@ export interface DcKybPayload {
     countryOfIncorporation: string;
     businessAddress: string;
     taxIdentification?: string;     // TIN
-    directors?: unknown[];
-    ubos?: unknown[];
+    directors?: any[];
+    ubos?: any[];
     partnerOrgId: string;
 }
 
-// Keep backward-compat alias for kyb.controller.ts
 export type FvKybPayload = DcKybPayload;
 
 export async function submitKybApplication(payload: DcKybPayload): Promise<DcApplicationResponse> {
-    return dcRequest<DcApplicationResponse>("POST", "/v1/kyb/verifications", {
-        reference:                 payload.partnerApplicationId,
-        partner_org_id:            payload.partnerOrgId,
-        company_name:              payload.companyName,
-        registration_number:       payload.registrationNumber,
-        country_of_incorporation:  payload.countryOfIncorporation,
-        business_address:          payload.businessAddress,
-        tax_identification:        payload.taxIdentification,
-        directors:                 payload.directors ?? [],
-        ubos:                      payload.ubos ?? [],
+    const rawDirectors = payload.directors || [];
+    const firstDirector = rawDirectors[0] || {};
+    const dirParts = (firstDirector.name || "").trim().split(" ");
+    const ownerFirst = dirParts[0] || "Director";
+    const ownerLast = dirParts.slice(1).join(" ") || ownerFirst;
+
+    const shareholders = rawDirectors.map(d => {
+        const parts = (d.name || "").trim().split(" ");
+        return {
+            name: d.name,
+            firstName: parts[0] || d.name,
+            lastName: parts.slice(1).join(" ") || parts[0],
+            nationality: d.nationality?.length === 2 ? d.nationality : "NG"
+        };
     });
+
+    const response = await dcRequest<any>("POST", "/v1/product/business/verification", {
+        email: "compliance@papaego.com",
+        phone: "+2348000000000",
+        ownerInfo: {
+            firstName: ownerFirst,
+            lastName: ownerLast,
+            dob: firstDirector.dateOfBirth?.split("T")[0] || "1990-01-01",
+            citizenship: firstDirector.nationality?.length === 2 ? firstDirector.nationality : "NG",
+            country: payload.countryOfIncorporation?.length === 2 ? payload.countryOfIncorporation : "NG",
+            address: payload.businessAddress || "Lagos, Nigeria"
+        },
+        shareholders: shareholders.length ? shareholders : [{
+            name: ownerFirst + " " + ownerLast,
+            firstName: ownerFirst,
+            lastName: ownerLast,
+            nationality: "NG"
+        }],
+        documents: []
+    });
+
+    const verificationId = response?.verificationId || response?.requestId || response?.applicationId || `dc_kyb_${Date.now()}`;
+
+    return {
+        applicationId: verificationId,
+        verificationId,
+        status: response?.status || "SUBMITTED",
+        submittedAt: new Date().toISOString(),
+        message: "DuckCheck KYB verification initiated"
+    };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -273,34 +341,34 @@ export async function getVerificationStatus(
 import crypto from "crypto";
 
 export function verifyWebhookSignature(rawBody: string, signature: string): boolean {
-    const secret  = process.env.DUCKCHECK_WEBHOOK_SECRET;
-    const isProd  = process.env.NODE_ENV === "production";
+    const secret = process.env.DUCKCHECK_WEBHOOK_SECRET || process.env.DUCKCHECK_CLIENT_SECRET;
+    const isProd = process.env.NODE_ENV === "production";
 
     if (!secret) {
         if (isProd) {
-            console.error("❌ DUCKCHECK_WEBHOOK_SECRET is not set in production. Rejecting compliance webhook.");
+            console.error("❌ DUCKCHECK_CLIENT_SECRET is not set in production. Rejecting compliance webhook.");
             return false;
         }
-        console.warn("⚠️  DUCKCHECK_WEBHOOK_SECRET not set — skipping webhook signature verification (dev/stub mode).");
+        console.warn("⚠️  DuckCheck secret not set — skipping webhook signature verification (dev/stub mode).");
         return true;
     }
 
     if (!signature) {
-        console.error("❌ Missing compliance webhook signature while DUCKCHECK_WEBHOOK_SECRET is configured.");
+        console.error("❌ Missing compliance webhook signature (x-hmac-signature).");
         return false;
     }
 
     try {
         const expectedSig = crypto
             .createHmac("sha256", secret)
-            .update(rawBody)
-            .digest("hex");
+            .update(Buffer.from(rawBody, "utf8"))
+            .digest("hex")
+            .toLowerCase();
 
-        const sigBuffer      = Buffer.from(signature);
-        const expectedBuffer = Buffer.from(`sha256=${expectedSig}`);
+        const cleanSig = signature.trim().toLowerCase().replace(/^sha256=/, "");
 
-        if (sigBuffer.length !== expectedBuffer.length) return false;
-        return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+        if (cleanSig.length !== expectedSig.length) return false;
+        return crypto.timingSafeEqual(Buffer.from(cleanSig), Buffer.from(expectedSig));
     } catch {
         return false;
     }
