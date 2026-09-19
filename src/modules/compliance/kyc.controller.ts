@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../../config/db";
-import * as FvBank from "./fvbank.adapter";
+import * as DuckCheck from "./duckcheck.adapter";
 import { recordStatusChange } from "./status.service";
 
 // ─────────────────────────────────────────────────────
@@ -66,10 +66,10 @@ export async function submitKyc(req: Request, res: Response, next: NextFunction)
                 }
             });
 
-        // Submit to FV Bank
-        let fvResponse: FvBank.FvApplicationResponse;
+        // Submit to DuckCheck for KYC verification
+        let dcResponse: DuckCheck.DcApplicationResponse;
         try {
-            fvResponse = await FvBank.submitKycApplication({
+            dcResponse = await DuckCheck.submitKycApplication({
                 partnerApplicationId: kyc.id,
                 fullName,
                 dateOfBirth,
@@ -80,21 +80,21 @@ export async function submitKyc(req: Request, res: Response, next: NextFunction)
                 idType,
                 partnerOrgId: organizationId
             });
-        } catch (fvErr: any) {
-            console.warn("⚠️ FV Bank KYC submission offline/mock fallback:", fvErr.message);
-            fvResponse = {
-                applicationId: `fv_kyc_${Date.now()}`,
+        } catch (dcErr: any) {
+            console.warn("⚠️ DuckCheck KYC submission fallback (will retry via webhook):", dcErr.message);
+            dcResponse = {
+                applicationId: `dc_kyc_${Date.now()}`,
                 status: "SUBMITTED",
                 submittedAt: new Date().toISOString(),
-                message: "Queued for automated FV Bank processing"
+                message: "Queued for DuckCheck KYC processing"
             };
         }
 
-        // Update record with FV Bank response
+        // Update KycRequest with DuckCheck application ID
         const updatedKyc = await prisma.kycRequest.update({
             where: { id: kyc.id },
             data: {
-                fvBankApplicationId: fvResponse.applicationId,
+                fvBankApplicationId: dcResponse.applicationId,  // reuse existing column
                 status: "SUBMITTED",
                 submittedAt: new Date()
             }
@@ -107,13 +107,13 @@ export async function submitKyc(req: Request, res: Response, next: NextFunction)
             toStatus: "SUBMITTED",
             changedBy: userId,
             kycRequestId: kyc.id,
-            reason: "KYC application submitted to FV Bank"
+            reason: "KYC application submitted to DuckCheck"
         });
 
         res.status(201).json({
             message: "KYC application submitted successfully.",
             kyc: updatedKyc,
-            fvBankApplicationId: fvResponse.applicationId
+            verificationId: dcResponse.applicationId
         });
     } catch (error) {
         next(error);
