@@ -657,23 +657,21 @@ router.patch("/trades/:id/upload-receipt", uploadToCloudinary.single("receipt"),
 
 /**
  * GET /customer/portal/fx-rates
+ * Returns authoritative customer rates from the OneLiquidity live rate engine.
+ * Never exposes raw provider rates or internal spread breakdowns.
  */
 router.get("/fx-rates", async (req: Request, res: Response) => {
     try {
-        const margins = await prisma.fxMargin.findMany();
-        const baseRates: Record<string, { buy: number; sell: number }> = {
-            "USD/NGN": { buy: 1580, sell: 1600 },
-            "GBP/NGN": { buy: 1990, sell: 2020 },
-            "EUR/NGN": { buy: 1720, sell: 1745 },
-            "CAD/NGN": { buy: 1150, sell: 1170 },
-            "AED/NGN": { buy: 430, sell: 445 },
-        };
+        const { getAllCustomerRates } = require("../exchange-rate/exchange-rate.service");
+        const customerRates = await getAllCustomerRates((req as any).user?.id);
 
-        const rates = Object.entries(baseRates).map(([pair, rate]) => ({
-            pair,
-            buy: rate.buy,
-            sell: rate.sell,
-            lastUpdated: new Date().toISOString(),
+        const rates = customerRates.map((r: any) => ({
+            pair: r.pair,
+            buy: r.customerRate,
+            sell: r.customerRate,
+            customerRate: r.customerRate,
+            markupType: r.markupType,
+            lastUpdated: r.createdAt || new Date().toISOString(),
         }));
 
         res.json({ rates });
