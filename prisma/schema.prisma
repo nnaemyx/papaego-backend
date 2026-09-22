@@ -290,6 +290,16 @@ model TradeRequest {
   originalFxRate  Decimal?
   negotiatedRate  Decimal?
 
+  // Full rate & margin audit trail
+  providerRate          Decimal?  // The raw OneLiquidity market rate
+  papaEgoSpread         Decimal?  // The markup/spread applied
+  customerRate          Decimal?  // What customer sees and pays against
+  rateSource            String?   // "OneLiquidity" or "OneLiquidity-STUB"
+  rateFetchedAt         DateTime? // When rate was fetched
+  quoteExpiresAt        DateTime? // When quote lock window closes
+  underlyingMarketValue Decimal?  // Supplier amount × providerRate
+  papaEgoFxMargin       Decimal?  // Customer NGN − underlyingMarketValue
+
   customer     Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
   agent        User?         @relation("AgentTradeRequests", fields: [agentId], references: [id], onDelete: SetNull)
   chatMessages ChatMessage[]
@@ -378,6 +388,16 @@ model Trade {
   supplierAccountNumber String?
   supplierSector        String?
   supplierAddress       String?
+
+  // Full rate & margin audit trail
+  providerRate          Decimal?  // The raw OneLiquidity market rate
+  papaEgoSpread         Decimal?  // The markup/spread applied
+  customerRate          Decimal?  // What customer sees and pays against
+  rateSource            String?   // "OneLiquidity" or "OneLiquidity-STUB"
+  rateFetchedAt         DateTime? // When rate was fetched
+  quoteExpiresAt        DateTime? // When quote lock window closes
+  underlyingMarketValue Decimal?  // Supplier amount × providerRate
+  papaEgoFxMargin       Decimal?  // Customer NGN − underlyingMarketValue
 
   customer     Customer      @relation("CustomerTrades", fields: [customerId], references: [id], onDelete: Cascade)
   agent        User          @relation("AgentTrades", fields: [agentId], references: [id], onDelete: Cascade)
@@ -841,7 +861,7 @@ model ExchangeRateMarkup {
 
 // Full audit trail of every quote generated
 model ExchangeRateLog {
-  id            String   @id @default(uuid())
+  id            String    @id @default(uuid())
   providerName  String
   baseCurrency  String
   quoteCurrency String
@@ -849,11 +869,31 @@ model ExchangeRateLog {
   markupType    String
   markupApplied Decimal
   customerRate  Decimal
-  requestedBy   String? // User ID or service name that requested the quote
-  createdAt     DateTime @default(now())
+  requestedBy   String?   // User ID or service name that requested the quote
+  // Quote validity window
+  quoteExpiresAt DateTime?
+  rateSource     String?  // e.g. "OneLiquidity", "OneLiquidity-STUB"
+  createdAt     DateTime  @default(now())
 
   @@index([baseCurrency, quoteCurrency])
   @@index([createdAt])
+}
+
+// Sanity check log — records OneLiquidity vs OKX divergence for each pair
+model RateSanityLog {
+  id              String   @id @default(uuid())
+  pair            String   // e.g. "NGN/USD"
+  primarySource   String   // e.g. "OneLiquidity"
+  primaryRate     Decimal
+  referenceSource String   // e.g. "OKX"
+  referenceRate   Decimal
+  divergencePct   Decimal
+  status          String   // HEALTHY | WARNING | CRITICAL
+  createdAt       DateTime @default(now())
+
+  @@index([pair])
+  @@index([createdAt])
+  @@index([status])
 }
 
 // ---------- VERIFICATION & CASHOUT (from remote) ----------

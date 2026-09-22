@@ -9,7 +9,11 @@ import { recordStatusChange } from "./status.service";
 export async function submitKyc(req: Request, res: Response, next: NextFunction) {
     try {
         const userId = (req as any).user.id;
-        const { organizationId, fullName, dateOfBirth, nationality, residentialAddress, phone, email, idType } = req.body;
+        const { organizationId, fullName, dateOfBirth, nationality, residentialAddress, phone, email, idType, idNumber } = req.body;
+
+        if (!idNumber || idNumber.trim() === "") {
+            return res.status(400).json({ error: "Document / ID number (e.g. NIN, Passport Number, Driver's License Number) is required." });
+        }
 
         // Verify membership
         const membership = await prisma.organizationMember.findFirst({ where: { organizationId, userId } });
@@ -78,6 +82,7 @@ export async function submitKyc(req: Request, res: Response, next: NextFunction)
                 phone,
                 email,
                 idType,
+                idNumber: idNumber.trim(),
                 partnerOrgId: organizationId
             });
         } catch (dcErr: any) {
@@ -113,7 +118,8 @@ export async function submitKyc(req: Request, res: Response, next: NextFunction)
         res.status(201).json({
             message: "KYC application submitted successfully.",
             kyc: updatedKyc,
-            verificationId: dcResponse.applicationId
+            verificationId: dcResponse.applicationId,
+            verificationUrl: dcResponse.url || null
         });
     } catch (error) {
         next(error);

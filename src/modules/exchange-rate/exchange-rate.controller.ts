@@ -11,7 +11,10 @@ import {
     deactivateMarkup,
     getRateLogs,
     getProviderRateHistory,
+    getLiveTradeQuote,
 } from "./exchange-rate.service";
+import { getLatestSanityResults, getSanityHistory } from "./rate.sanity.service";
+import { triggerRateRefresh } from "../../jobs/rate.refresh.job";
 import { MarkupType } from "@prisma/client";
 
 // ─── Customer Rate Endpoints (Public to auth'd users) ─────────────────────────
@@ -211,6 +214,131 @@ export async function getRateAuditLogs(req: Request, res: Response) {
             limit: limit ? Number(limit) : 50,
         });
         res.json(result);
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+}
+
+// ─── Trade Quote & Breakdown Endpoints ────────────────────────────────────────
+
+/**
+ * POST /exchange-rate/quote
+ * Customer-facing quote generation.
+ * Input: { baseCurrency: "NGN", quoteCurrency: "USD", amount: 3000000 }
+ *
+ * NOTE: As requested by Pascal / product team, the customer MUST NEVER see:
+ * - raw provider/market rate
+ * - PapaEgo spread/markup
+ * - PapaEgo FX margin
+ *
+ * They ONLY see:
+ * - customerRate (e.g. 1595)
+ * - customerNgnAmount (e.g. 3,000,000)
+ * - supplierAmount (e.g. 1880.88)
+ * - quoteExpiresAt (expiry timer)
+ */
+export async function createTradeQuote(req: Request, res: Response) {
+    try {
+        const { baseCurrency, quoteCurrency, amount } = req.body;
+        const user = (req as any).user;
+
+        if (!baseCurrency || !quoteCurrency || amount === undefined) {
+            return res.status(400).json({
+                error: "baseCurrency, quoteCurrency, and amount are required",
+            });
+        }
+
+        const numericAmount = Number(amount);
+        if (isNaN(numericAmount) || numericAmount <= 0) {
+            return res.status(400).json({ error: "amount must be a positive number" });
+        }
+
+        const breakdown = await getLiveTradeQuote(
+            baseCurrency as string,
+            quoteCurrency as string,
+            numericAmount,
+            user?.id
+        );
+
+        // Filter response strictly for customer view
+        res.json({
+            pair: breakdown.pair,
+            direction: breakdown.direction,
+            customerRate: breakdown.customerRate,
+            customerNgnAmount: breakdown.customerNgnAmount,
+            supplierAmount: breakdown.supplierAmount,
+            fetchedAt: breakdown.fetchedAt,
+            quoteExpiresAt: breakdown.quoteExpiresAt,
+            rateSource: breakdown.rateSource,
+        });
+    } catch (err: any) {
+        console.error("[createTradeQuote] Error:", err);
+        res.status(500).json({ error: err.message || "Failed to generate quote" });
+    }
+}
+
+/**
+ * POST /exchange-rate/breakdown
+ * Admin-only inspection of quote breakdown.
+ * Returns full internal accounting breakdown:
+ * - providerRate (e.g. 1580)
+ * - markupApplied (e.g. 15)
+ * - customerRate (e.g. 1595)
+ * - supplierAmount (e.g. 1880.88)
+ * - underlyingMarketValue (e.g. 2,971,790.40)
+ * - papaEgoFxMargin (e.g. 28,209.60)
+ */
+export async function getTradeBreakdownInternal(req: Request, res: Response) {
+    try {
+        const { baseCurrency, quoteCurrency, amount } = req.body;
+        const user = (req as any).user;
+
+        if (!baseCurrency || !quoteCurrency || amount === undefined) {
+            return res.status(400).json({
+                error: "baseCurrency, quoteCurrency, and amount are required",
+            });
+        }
+
+        const numericAmount = Number(amount);
+        if (isNaN(numericAmount) || numericAmount <= 0) {
+            return res.status(400).json({ error: "amount must be a positive number" });
+        }
+
+        const breakdown = await getLiveTradeQuote(
+            baseCurrency as string,
+            quoteCurrency as string,
+            numericAmount,
+            user?.id
+        );
+
+        res.json({ breakdown });
+    } catch (err: any) {
+        console.error("[getTradeBreakdownInternal] Error:", err);
+        res.status(500).json({ error: err.message || "Failed to calculate breakdown" });
+    }
+}
+
+/**
+ * GET /exchange-rate/health
+ * Admin-only: get latest sanity checks between OneLiquidity and OKX for all pairs.
+ */
+export async function getRateHealth(req: Request, res: Response) {
+    try {
+        const results = await getLatestSanityResults();
+        res.json({ health: results });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+}
+
+/**
+ * POST /exchange-rate/refresh
+ * Admin-only: trigger immediate background refresh of all rates from OneLiquidity & OKX.
+ */
+export async function triggerManualRateRefresh(req: Request, res: Response) {
+    try {
+        await triggerRateRefresh();
+        res.json({ success: true, message: "Rate refresh triggered successfully" });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }

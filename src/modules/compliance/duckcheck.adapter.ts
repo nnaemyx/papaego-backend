@@ -197,8 +197,13 @@ export async function submitKycApplication(payload: DcKycPayload): Promise<DcApp
         "NATIONAL_ID": "NIN",
         "PASSPORT": "PASSPORT",
         "DRIVERS_LICENSE": "DRIVERS_LICENSE",
-        "BVN": "NIN"
+        "BVN": "NIN",
+        "NIN": "NIN"
     };
+
+    if (!payload.idNumber || payload.idNumber.trim() === "") {
+        throw new Error("Document ID Number is required for DuckCheck identity verification.");
+    }
 
     const webhookUrl = process.env.DUCKCHECK_CALLBACK_URL || process.env.WEBHOOK_BASE_URL
         ? `${process.env.WEBHOOK_BASE_URL}/compliance/webhook`
@@ -219,7 +224,7 @@ export async function submitKycApplication(payload: DcKycPayload): Promise<DcApp
             deviceFingerprint: "papaego-web"
         },
         document: {
-            value: payload.idNumber || "PENDING",
+            value: payload.idNumber.trim(),
             identityType: identityTypeMapping[payload.idType] || "PASSPORT",
             country: payload.nationality?.length === 2 ? payload.nationality : "NG"
         }
@@ -231,9 +236,11 @@ export async function submitKycApplication(payload: DcKycPayload): Promise<DcApp
         applicationId: verificationId,
         verificationId,
         status: response?.status || "SUBMITTED",
-        url: response?.url,
+        url: response?.url, // Liveness / face verification URL from DuckCheck
         submittedAt: new Date().toISOString(),
-        message: "DuckCheck KYC session initiated"
+        message: response?.url 
+            ? "DuckCheck KYC session initiated. Live face verification required." 
+            : "DuckCheck KYC session initiated"
     };
 }
 

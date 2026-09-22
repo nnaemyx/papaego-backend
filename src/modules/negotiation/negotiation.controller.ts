@@ -36,21 +36,35 @@ async function getNegotiationConfig() {
 
 async function getUsdToNgnRate(): Promise<number> {
     try {
+        // Primary: read the latest ingested OneLiquidity rate from the exchange-rate module
+        const { getProviderRate } = require("../exchange-rate/exchange-rate.service");
+        const rateRecord = await getProviderRate("NGN", "USD");
+        if (rateRecord && rateRecord.providerRate > 0) {
+            return rateRecord.providerRate;
+        }
+    } catch (primaryErr: any) {
+        console.warn("[Negotiation] exchange-rate module unavailable:", primaryErr.message);
+    }
+
+    // Secondary: try SystemConfig fx_rates (admin-configured values)
+    try {
         const row = await prisma.systemConfig.findUnique({ where: { key: "fx_rates" } });
         if (row && Array.isArray(row.value)) {
             const usdNgnPair = (row.value as any[]).find(r => r.pair === "USD/NGN" || r.pair === "USD_NGN");
             if (usdNgnPair) {
-                return Number(usdNgnPair.sell || usdNgnPair.buy || 1500);
+                const configRate = Number(usdNgnPair.sell || usdNgnPair.buy);
+                if (configRate > 0) return configRate;
             }
         }
-        const { RealFxProvider } = require("../fx/fx.provider");
-        const fxProvider = new RealFxProvider();
-        const rate = await fxProvider.getRate("USD", "NGN", "NGA");
-        return rate || 1500;
-    } catch (e) {
-        console.error("Failed to get USD/NGN rate:", e);
-        return 1500;
+    } catch (configErr: any) {
+        console.warn("[Negotiation] SystemConfig fx_rates unavailable:", configErr.message);
     }
+
+    // If we reach here, we have no rate at all — throw rather than use a silent wrong value
+    throw new Error(
+        "USD/NGN rate unavailable for turnover calculation. " +
+        "Ensure OneLiquidity rates are being ingested and ONELIQUIDITY_API_KEY is set."
+    );
 }
 
 function getTradeUsdAmount(trade: { amount: any, sendCurrency: string, receiveCurrency: string, fxRate: any }, usdToNgnRate: number): number {
@@ -66,14 +80,17 @@ function getTradeUsdAmount(trade: { amount: any, sendCurrency: string, receiveCu
         return fxRate > 0 ? amount / fxRate : amount;
     }
     if (sendUpper === "NGN") {
-        return usdToNgnRate > 0 ? amount / usdToNgnRate : amount / 1500;
+        if (usdToNgnRate <= 0) throw new Error("Invalid USD/NGN rate for turnover calculation");
+        return amount / usdToNgnRate;
     }
     if (receiveUpper === "NGN") {
         const amountInNgn = amount * fxRate;
-        return usdToNgnRate > 0 ? amountInNgn / usdToNgnRate : amountInNgn / 1500;
+        if (usdToNgnRate <= 0) throw new Error("Invalid USD/NGN rate for turnover calculation");
+        return amountInNgn / usdToNgnRate;
     }
     return amount;
 }
+
 
 /**
  * GET /customer/portal/trades/:id/negotiate/eligibility

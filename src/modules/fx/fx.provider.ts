@@ -1,3 +1,8 @@
+/**
+ * @deprecated Use getOneLiquidityRate() from exchange-rate/oneliquidity.provider.ts instead.
+ * This module uses open.er-api.com (free daily-update rates) and is being phased out
+ * in favour of the OneLiquidity live feed via the exchange-rate module.
+ */
 export interface FxProvider {
     getRate(
         base: string,
@@ -25,9 +30,15 @@ export class RealFxProvider implements FxProvider {
             return rate;
         } catch (error) {
             console.error("FX Provider Error:", error);
-            // Fallback to a hardcoded rate just in case the API is down, so the app doesn't crash completely
-            return 1500;
+            // REMOVED: hardcoded fallback `return 1500` — we must never silently use a wrong rate.
+            // Callers should catch this error and surface it appropriately.
+            throw new Error(
+                `FX rate unavailable for ${base}/${quote}. ` +
+                `The open.er-api.com API failed and no hardcoded fallback is permitted. ` +
+                `Please ensure ONELIQUIDITY_API_KEY is configured and the exchange-rate module is used.`
+            );
         }
     }
 }
+
 

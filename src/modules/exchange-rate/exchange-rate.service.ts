@@ -1,5 +1,9 @@
 import prisma from "../../config/db";
 import { MarkupType } from "@prisma/client";
+import { getOneLiquidityRate, OneLiquidityProviderError } from "./oneliquidity.provider";
+import { getOkxReferenceRate } from "./okx.provider";
+import { compareRates, logSanityResult } from "./rate.sanity.service";
+import { RATE_LOCK_DURATION_MS, computeLockedUntil } from "../../utils/checkRateExpiry";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -353,5 +357,163 @@ export async function getProviderRateHistory(
         where: { baseCurrency: base, quoteCurrency: quote },
         orderBy: { fetchedAt: "desc" },
         take: limit,
+    });
+}
+
+// ─── Live Rate + Trade Breakdown ──────────────────────────────────────────────
+
+/**
+ * The canonical FX breakdown used for all customer trade quotes.
+ *
+ * Internal values (never exposed to customers):
+ *   providerRate      — raw OneLiquidity rate (e.g. ₦1,580/USD)
+ *   markupApplied     — PapaEgo spread added (e.g. ₦15)
+ *
+ * Customer-visible values:
+ *   customerRate      — what customer sees (e.g. ₦1,595/USD)
+ *   supplierAmount    — what the supplier receives (e.g. $1,880.88)
+ *
+ * Internal reconciliation values:
+ *   underlyingMarketValue — supplierAmount × providerRate (cost to PapaEgo at market rate)
+ *   papaEgoFxMargin       — customerNgnAmount − underlyingMarketValue (gross FX profit)
+ */
+export interface TradeBreakdown {
+    // Pair info
+    baseCurrency: string;
+    quoteCurrency: string;
+    pair: string;
+    direction: string;
+    // Rate components (internal — never show to customer)
+    providerRate: number;
+    providerName: string;
+    markupType: string;
+    markupApplied: number;
+    // Customer-visible
+    customerRate: number;
+    customerNgnAmount: number;
+    supplierAmount: number;
+    // Internal margin (admin only)
+    underlyingMarketValue: number;
+    papaEgoFxMargin: number;
+    // Metadata
+    fetchedAt: Date;
+    quoteExpiresAt: Date;
+    rateSource: string;
+    isStub: boolean;
+}
+
+/**
+ * Fetch a live rate from OneLiquidity, apply the configured markup,
+ * and calculate the full trade breakdown for a given NGN amount.
+ *
+ * This is the single canonical function for all FX calculations.
+ *
+ * @param baseCurrency      e.g. "NGN"
+ * @param quoteCurrency     e.g. "USD" or "CNY"
+ * @param customerNgnAmount The NGN amount the customer is sending (e.g. 3_000_000)
+ * @param requestedBy       Optional user ID for audit logging
+ */
+export async function getLiveTradeQuote(
+    baseCurrency: string,
+    quoteCurrency: string,
+    customerNgnAmount: number,
+    requestedBy?: string
+): Promise<TradeBreakdown> {
+    const base  = baseCurrency.toUpperCase();
+    const quote = quoteCurrency.toUpperCase();
+
+    // 1. Fetch live rate from OneLiquidity
+    const olRate = await getOneLiquidityRate(base, quote);
+    const providerRate = olRate.mid;
+
+    // 2. Ingest into DB (keeps history fresh)
+    await ingestProviderRate({
+        providerName:  olRate.isStub ? "OneLiquidity-STUB" : "OneLiquidity",
+        baseCurrency:  base,
+        quoteCurrency: quote,
+        providerRate,
+    }).catch(err => console.warn("[getLiveTradeQuote] ingest warning:", err.message));
+
+    // 3. Get markup configuration
+    const markup     = await prisma.exchangeRateMarkup.findUnique({
+        where: { baseCurrency_quoteCurrency: { baseCurrency: base, quoteCurrency: quote } },
+    });
+    const markupType  = markup?.markupType  ?? MarkupType.FIXED;
+    const markupValue = markup ? Number(markup.markupValue) : 0;
+
+    // 4. Calculate customer rate
+    const { customerRate, markupApplied } = calculateCustomerRate(providerRate, markupType, markupValue);
+
+    // 5. Calculate trade amounts
+    // Direction: base=NGN → customer sends NGN, supplier receives quoteCurrency
+    // customerNgnAmount ÷ customerRate = supplierAmount
+    const supplierAmount        = parseFloat((customerNgnAmount / customerRate).toFixed(6));
+    // Cost to PapaEgo at raw market rate
+    const underlyingMarketValue = parseFloat((supplierAmount * providerRate).toFixed(2));
+    // Gross FX margin = what customer paid - what it actually cost
+    const papaEgoFxMargin       = parseFloat((customerNgnAmount - underlyingMarketValue).toFixed(2));
+
+    // 6. Quote expiry
+    const fetchedAt     = olRate.fetchedAt;
+    const quoteExpiresAt = computeLockedUntil(); // 10-minute lock window
+
+    // 7. Run OKX sanity check (non-blocking)
+    getOkxReferenceRate(base, quote).then(async okxRate => {
+        if (okxRate) {
+            const sanity = compareRates(`${base}/${quote}`, "OneLiquidity", providerRate, "OKX", okxRate.mid);
+            await logSanityResult(sanity).catch(() => {});
+        }
+    }).catch(() => {});
+
+    // 8. Audit log (internal)
+    await prisma.exchangeRateLog.create({
+        data: {
+            providerName:   olRate.isStub ? "OneLiquidity-STUB" : "OneLiquidity",
+            baseCurrency:   base,
+            quoteCurrency:  quote,
+            providerRate,
+            markupType:     markupType.toString(),
+            markupApplied,
+            customerRate,
+            requestedBy:    requestedBy ?? null,
+            quoteExpiresAt,
+            rateSource:     "OneLiquidity",
+        },
+    }).catch(err => console.warn("[getLiveTradeQuote] log warning:", err.message));
+
+    return {
+        baseCurrency:   base,
+        quoteCurrency:  quote,
+        pair:           `${base}/${quote}`,
+        direction:      `${base} → ${quote}`,
+        providerRate,
+        providerName:   olRate.isStub ? "OneLiquidity-STUB" : "OneLiquidity",
+        markupType:     markupType.toString(),
+        markupApplied,
+        customerRate,
+        customerNgnAmount,
+        supplierAmount,
+        underlyingMarketValue,
+        papaEgoFxMargin,
+        fetchedAt,
+        quoteExpiresAt,
+        rateSource:     "OneLiquidity",
+        isStub:         olRate.isStub,
+    };
+}
+
+/**
+ * Fetch a live rate and ingest it without computing a trade breakdown.
+ * Used by the rate refresh job.
+ */
+export async function fetchAndIngestLiveRate(baseCurrency: string, quoteCurrency: string) {
+    const base  = baseCurrency.toUpperCase();
+    const quote = quoteCurrency.toUpperCase();
+    const olRate = await getOneLiquidityRate(base, quote);
+    return ingestProviderRate({
+        providerName:  olRate.isStub ? "OneLiquidity-STUB" : "OneLiquidity",
+        baseCurrency:  base,
+        quoteCurrency: quote,
+        providerRate:  olRate.mid,
     });
 }

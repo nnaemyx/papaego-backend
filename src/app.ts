@@ -66,5 +66,8 @@ app.use(errorHandler);
 
 // Start background jobs
 startRateExpiryJob();
+import { startRateRefreshJob } from "./jobs/rate.refresh.job";
+startRateRefreshJob();
 
 export default app;
+
