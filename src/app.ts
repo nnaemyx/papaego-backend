@@ -55,7 +55,8 @@ app.use(limiter);
 
 app.use(express.json({
     verify: (req: any, res, buf) => {
-        req.rawBody = buf.toString();
+        req.rawBody = buf;
+        req.rawBodyText = buf.toString("utf8");
     }
 }));
 app.use("/api", routes);

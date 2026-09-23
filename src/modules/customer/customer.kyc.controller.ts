@@ -75,9 +75,25 @@ export async function getKycStatus(req: Request, res: Response) {
             },
         ];
 
+        const orgMember = await prisma.organizationMember.findFirst({
+            where: { userId },
+            include: {
+                organization: {
+                    include: { kybRequest: true }
+                }
+            }
+        });
+        const kybStatus = orgMember?.organization?.kybRequest?.status || null;
+        const isKycApproved = customer.kycStatus === "APPROVED" && customer.verified === true;
+        const isKybApproved = !kybStatus || kybStatus === "APPROVED";
+        const isFullyVerified = isKycApproved && isKybApproved;
+
         res.json({
             status: customer.kycStatus,
+            kycStatus: customer.kycStatus,
             verified: customer.verified,
+            kybStatus,
+            isFullyVerified,
             rejectionReason: customer.kycRejectionReason,
             reviewedAt: customer.kycReviewedAt?.toISOString() || null,
             hasDocuments: !!(customer.governmentIdUrl && customer.proofOfAddressUrl),

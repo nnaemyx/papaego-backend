@@ -148,15 +148,23 @@ router.post("/paystack", async (req: Request, res: Response) => {
 router.post("/moneypings", async (req: Request, res: Response) => {
     try {
         const mpSecret = process.env.MONEYPINGS_WEBHOOK_SECRET;
-        const sentSig = (req.headers["x-webhook-signature"] as string) || "";
-        const webhookId = (req.headers["x-webhook-id"] as string) || "";
+        const rawSig = (
+            (req.headers["x-webhook-signature"] as string) ||
+            (req.headers["x-signature"] as string) ||
+            (req.headers["x-moneypings-signature"] as string) ||
+            (req.headers["signature"] as string) ||
+            (req.headers["moneypings-signature"] as string) ||
+            (req.headers["webhook-signature"] as string) ||
+            ""
+        ).trim();
+        const sentSig = rawSig.replace(/^sha256=/, "").trim().toLowerCase();
+        const webhookId = (req.headers["x-webhook-id"] as string) || (req.body?.id as string) || "";
         const webhookEvent = (req.headers["x-webhook-event"] as string) || req.body?.event || "";
-        const webhookTimestamp = (req.headers["x-webhook-timestamp"] as string) || "";
-        const rawBody = (req as any).rawBody !== undefined ? (req as any).rawBody : JSON.stringify(req.body || {});
+        const webhookTimestamp = (req.headers["x-webhook-timestamp"] as string) || req.body?.timestamp || "";
 
         // 1. Mandatory Header Check: Signature must be present
         if (!sentSig) {
-            console.warn(`[MoneyPings Webhook] Missing X-Webhook-Signature header. WebhookId: ${webhookId || "none"}`);
+            console.warn(`[MoneyPings Webhook] Missing signature header. WebhookId: ${webhookId || "none"}. Headers:`, Object.keys(req.headers));
             return res.status(401).json({ error: "bad signature" });
         }
 
@@ -167,13 +175,13 @@ router.post("/moneypings", async (req: Request, res: Response) => {
         }
 
         // 3. Constant-time HMAC-SHA256 verification against raw body
-        const rawBytes = Buffer.isBuffer((req as any).rawBody)
+        const rawBytes: Buffer = Buffer.isBuffer((req as any).rawBody)
             ? (req as any).rawBody
             : typeof (req as any).rawBody === "string"
             ? Buffer.from((req as any).rawBody, "utf8")
             : Buffer.isBuffer(req.body)
             ? req.body
-            : Buffer.from(JSON.stringify(req.body || {}), "utf8");
+            : Buffer.from(typeof req.body === "string" ? req.body : JSON.stringify(req.body || {}), "utf8");
 
         const expectedSig = crypto
             .createHmac("sha256", mpSecret)
@@ -181,11 +189,11 @@ router.post("/moneypings", async (req: Request, res: Response) => {
             .digest("hex")
             .toLowerCase();
 
-        const a = Buffer.from(sentSig.trim().toLowerCase(), "utf8");
+        const a = Buffer.from(sentSig, "utf8");
         const b = Buffer.from(expectedSig, "utf8");
 
         if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-            console.warn(`[MoneyPings Webhook] Invalid signature received. WebhookId: ${webhookId}`);
+            console.warn(`[MoneyPings Webhook] Invalid signature. ID: ${webhookId}, Sent: ${sentSig.substring(0, 10)}..., Expected: ${expectedSig.substring(0, 10)}..., BodyBytes: ${rawBytes.length}`);
             return res.status(401).json({ error: "bad signature" });
         }
 
@@ -209,13 +217,19 @@ router.post("/moneypings", async (req: Request, res: Response) => {
             }
         }).catch(() => {});
 
+        // Handle test events immediately (MoneyPings expects any 2xx response)
+        const event = webhookEvent;
+        if (event === "webhook.test" || req.body?.data?.test === true) {
+            console.log(`[MoneyPings Webhook] Responded 200 OK to test event: ${webhookId}`);
+            return res.status(200).json({ ok: true, received: true, test: true, message: "Test event acknowledged successfully" });
+        }
+
         // 4. Acknowledge verified delivery quickly (MoneyPings times out after 10s)
         res.status(200).json({ ok: true });
 
-        const event = webhookEvent;
         const data = req.body?.data;
 
-        // 5. Only act on wallet.credited — ignore all other events (e.g. webhook.test)
+        // 5. Only act on wallet.credited — ignore all other events
         if (event !== "wallet.credited" || !data) {
             console.log(`[MoneyPings Webhook] Acknowledged non-funding event: ${event} (ID: ${webhookId})`);
             return;

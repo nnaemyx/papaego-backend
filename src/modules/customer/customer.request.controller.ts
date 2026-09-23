@@ -13,9 +13,51 @@ import { assertSufficientBalance, reserveFunds, releaseReservation, checkWalletB
  */
 export async function createTradeRequest(req: Request, res: Response) {
     try {
-        const customerId = (req as any).user.customer?.id;
+        const user = (req as any).user;
+        const customerId = user?.customer?.id;
         if (!customerId) {
             return res.status(403).json({ error: "Customer profile not found" });
+        }
+
+        const customer = await prisma.customer.findUnique({
+            where: { id: customerId },
+            include: {
+                user: {
+                    include: {
+                        orgMemberships: {
+                            include: {
+                                organization: {
+                                    include: { kybRequest: true }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        if (!customer) {
+            return res.status(403).json({ error: "Customer profile not found" });
+        }
+
+        // 1. Hard Gate: KYC verification must be approved
+        if (customer.kycStatus !== "APPROVED" || !customer.verified) {
+            return res.status(403).json({
+                error: "Your identity verification (KYC) is pending approval. You cannot initiate trades until your account is fully verified.",
+                code: "KYC_VERIFICATION_REQUIRED",
+                kycStatus: customer.kycStatus
+            });
+        }
+
+        // 2. Hard Gate: Business (KYB) verification must be approved if applicable
+        const orgMember = (customer as any).user?.orgMemberships?.[0];
+        const orgKyb = orgMember?.organization?.kybRequest;
+        if (orgKyb && orgKyb.status !== "APPROVED") {
+            return res.status(403).json({
+                error: `Your business verification (KYB) is ${orgKyb.status.toLowerCase().replace('_', ' ')}. You cannot initiate trades until your business verification is approved.`,
+                code: "KYB_VERIFICATION_REQUIRED",
+                kybStatus: orgKyb.status
+            });
         }
 
         const {
@@ -38,6 +80,20 @@ export async function createTradeRequest(req: Request, res: Response) {
 
         if (!amount) {
             return res.status(400).json({ error: "Amount is required" });
+        }
+
+        const numericAmount = parseFloat(String(amount));
+        if (isNaN(numericAmount) || numericAmount <= 0) {
+            return res.status(400).json({ error: "Please enter a valid amount" });
+        }
+
+        // Enforce minimum transaction amount for NGN trades
+        if (sendCurrency === "NGN" && numericAmount < 20000000) {
+            return res.status(400).json({
+                error: "Minimum transaction amount is ₦20,000,000",
+                code: "MINIMUM_AMOUNT_NOT_MET",
+                minAmount: 20000000
+            });
         }
 
         // Enforce wallet funding: a submitted (non-draft) request must be fully

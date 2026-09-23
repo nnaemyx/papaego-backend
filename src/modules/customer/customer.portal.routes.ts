@@ -1447,9 +1447,37 @@ router.post("/wallet/moneypings/pay-in", async (req: Request, res: Response) => 
             return res.status(404).json({ error: "Customer record not found" });
         }
 
+        // 1. Hard Gate: KYC verification must be approved
+        if (customer.kycStatus !== "APPROVED" || !customer.verified) {
+            return res.status(403).json({
+                error: "Your identity verification (KYC) is pending approval. You cannot fund your ledger or initiate transactions until your account is fully verified.",
+                code: "KYC_VERIFICATION_REQUIRED",
+                kycStatus: customer.kycStatus
+            });
+        }
+
+        // 2. Hard Gate: Business (KYB) verification must be approved if applicable
+        const orgMember = await prisma.organizationMember.findFirst({
+            where: { userId: user.id },
+            include: { organization: { include: { kybRequest: true } } }
+        });
+        const orgKyb = orgMember?.organization?.kybRequest;
+        if (orgKyb && orgKyb.status !== "APPROVED") {
+            return res.status(403).json({
+                error: `Your business verification (KYB) is ${orgKyb.status.toLowerCase().replace('_', ' ')}. You cannot fund your ledger or initiate transactions until your business is approved.`,
+                code: "KYB_VERIFICATION_REQUIRED",
+                kybStatus: orgKyb.status
+            });
+        }
+
         const { amount } = req.body;
-        if (!amount || Number(amount) <= 0) {
-            return res.status(400).json({ error: "Valid amount is required" });
+        const numAmount = Number(amount);
+        if (!amount || isNaN(numAmount) || numAmount < 20000000) {
+            return res.status(400).json({
+                error: "Minimum transaction amount is ₦20,000,000",
+                code: "MINIMUM_AMOUNT_NOT_MET",
+                minAmount: 20000000
+            });
         }
 
         const mpKey = process.env.MONEYPINGS_API_KEY;
