@@ -53,6 +53,17 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// ── Webhook routes are mounted BEFORE express.json ──────────────────────────
+// Server-to-server webhooks (MoneyPings, Paystack) must receive the raw body
+// bytes so HMAC-SHA256 can be computed over the exact bytes that were signed.
+// express.json() would parse the body first and lose the original byte stream.
+// Each webhook handler applies express.raw() or express.json() internally.
+// These routes also bypass the browser CORS origin check — they are called by
+// payment provider servers, not browsers.
+app.use("/hooks", webhookRoutes);
+app.use("/webhooks", webhookRoutes);
+
+// ── All other routes use express.json (with rawBody capture as fallback) ─────
 app.use(express.json({
     verify: (req: any, res, buf) => {
         req.rawBody = buf;
@@ -60,8 +71,6 @@ app.use(express.json({
     }
 }));
 app.use("/api", routes);
-app.use("/hooks", webhookRoutes);
-app.use("/webhooks", webhookRoutes);
 
 app.use(errorHandler);
 

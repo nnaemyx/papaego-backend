@@ -145,8 +145,27 @@ router.post("/paystack", async (req: Request, res: Response) => {
 // using the secret returned when you register your endpoint URL.
 // The event to act on is "wallet.credited" — other events are acknowledged
 // but not processed (collection.received, collection.confirmed, etc.).
-router.post("/moneypings", async (req: Request, res: Response) => {
+router.post(
+    "/moneypings",
+    // Capture the exact bytes BEFORE any JSON parsing — required for HMAC
+    require("express").raw({ type: "*/*", limit: "1mb" }),
+    async (req: Request, res: Response) => {
     try {
+        // rawBytes is a Buffer from express.raw(). Fall back to any pre-stored rawBody.
+        const rawBytes: Buffer = Buffer.isBuffer(req.body)
+            ? req.body
+            : Buffer.isBuffer((req as any).rawBody)
+            ? (req as any).rawBody
+            : Buffer.from(typeof (req as any).rawBody === "string" ? (req as any).rawBody : JSON.stringify(req.body || {}), "utf8");
+
+        // Parse the JSON body ourselves after capturing the raw bytes
+        let parsedBody: any = {};
+        try {
+            parsedBody = JSON.parse(rawBytes.toString("utf8"));
+        } catch {
+            console.warn("[MoneyPings Webhook] Body is not valid JSON");
+        }
+
         const mpSecret = process.env.MONEYPINGS_WEBHOOK_SECRET;
         const rawSig = (
             (req.headers["x-webhook-signature"] as string) ||
@@ -158,9 +177,9 @@ router.post("/moneypings", async (req: Request, res: Response) => {
             ""
         ).trim();
         const sentSig = rawSig.replace(/^sha256=/, "").trim().toLowerCase();
-        const webhookId = (req.headers["x-webhook-id"] as string) || (req.body?.id as string) || "";
-        const webhookEvent = (req.headers["x-webhook-event"] as string) || req.body?.event || "";
-        const webhookTimestamp = (req.headers["x-webhook-timestamp"] as string) || req.body?.timestamp || "";
+        const webhookId = (req.headers["x-webhook-id"] as string) || (parsedBody?.id as string) || "";
+        const webhookEvent = (req.headers["x-webhook-event"] as string) || parsedBody?.event || "";
+        const webhookTimestamp = (req.headers["x-webhook-timestamp"] as string) || parsedBody?.timestamp || "";
 
         // 1. Mandatory Header Check: Signature must be present
         if (!sentSig) {
@@ -174,15 +193,7 @@ router.post("/moneypings", async (req: Request, res: Response) => {
             return res.status(401).json({ error: "bad signature" });
         }
 
-        // 3. Constant-time HMAC-SHA256 verification against raw body
-        const rawBytes: Buffer = Buffer.isBuffer((req as any).rawBody)
-            ? (req as any).rawBody
-            : typeof (req as any).rawBody === "string"
-            ? Buffer.from((req as any).rawBody, "utf8")
-            : Buffer.isBuffer(req.body)
-            ? req.body
-            : Buffer.from(typeof req.body === "string" ? req.body : JSON.stringify(req.body || {}), "utf8");
-
+        // 3. Constant-time HMAC-SHA256 verification against exact raw bytes
         const expectedSig = crypto
             .createHmac("sha256", mpSecret)
             .update(rawBytes)
@@ -219,7 +230,7 @@ router.post("/moneypings", async (req: Request, res: Response) => {
 
         // Handle test events immediately (MoneyPings expects any 2xx response)
         const event = webhookEvent;
-        if (event === "webhook.test" || req.body?.data?.test === true) {
+        if (event === "webhook.test" || parsedBody?.data?.test === true) {
             console.log(`[MoneyPings Webhook] Responded 200 OK to test event: ${webhookId}`);
             return res.status(200).json({ ok: true, received: true, test: true, message: "Test event acknowledged successfully" });
         }
@@ -227,7 +238,7 @@ router.post("/moneypings", async (req: Request, res: Response) => {
         // 4. Acknowledge verified delivery quickly (MoneyPings times out after 10s)
         res.status(200).json({ ok: true });
 
-        const data = req.body?.data;
+        const data = parsedBody?.data;
 
         // 5. Only act on wallet.credited — ignore all other events
         if (event !== "wallet.credited" || !data) {
@@ -342,7 +353,8 @@ router.post("/moneypings", async (req: Request, res: Response) => {
         console.error("[MoneyPings Webhook] Error processing event:", err);
         // Response already sent — don't try to send again
     }
-});
+}); // end async handler
+// end router.post("/moneypings")
 
 router.post("/payment", async (req: Request, res: Response) => {
     const signature = req.headers["x-signature"] as string;
