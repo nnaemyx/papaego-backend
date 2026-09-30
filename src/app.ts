@@ -60,8 +60,11 @@ app.use(limiter);
 // Each webhook handler applies express.raw() or express.json() internally.
 // These routes also bypass the browser CORS origin check — they are called by
 // payment provider servers, not browsers.
+// MoneyPings registered their webhook to /api/webhooks/moneypings, so we must
+// mount at /api/webhooks as well — all BEFORE express.json().
 app.use("/hooks", webhookRoutes);
 app.use("/webhooks", webhookRoutes);
+app.use("/api/webhooks", webhookRoutes);
 
 // ── All other routes use express.json (with rawBody capture as fallback) ─────
 app.use(express.json({

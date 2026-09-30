@@ -1,6 +1,5 @@
 import { Router } from "express";
 import tradeRoutes from "./trades/trade.routes";
-import webhookRoutes from "./webhooks/webhook.routes";
 import customerRoutes from "./customers/customer.routes";
 import agentRoutes from "./agents/agent.routes";
 import agentOnboardingRoutes from "./agents/agent.onboarding.routes";
@@ -33,7 +32,9 @@ const router = Router();
 
 router.use("/auth", authRoutes);
 router.use("/trades", tradeRoutes);
-router.use("/webhooks", webhookRoutes);
+// NOTE: webhookRoutes are mounted directly in app.ts (at /hooks and /webhooks)
+// BEFORE express.json(), so raw body bytes are preserved for HMAC verification.
+// Do NOT mount them here under /api — express.json() would parse the body first.
 router.use("/customer/portal", customerPortalRoutes); // Customer self-service portal
 router.use("/customer", customerRoutes);
 router.use("/agent/onboarding", agentOnboardingRoutes);
