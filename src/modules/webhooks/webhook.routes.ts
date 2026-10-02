@@ -166,7 +166,8 @@ router.post(
             console.warn("[MoneyPings Webhook] Body is not valid JSON");
         }
 
-        const mpSecret = process.env.MONEYPINGS_WEBHOOK_SECRET;
+        const rawSecret = process.env.MONEYPINGS_WEBHOOK_SECRET || "";
+        const mpSecret = rawSecret.replace(/^\uFEFF/, "").trim().replace(/^["']|["']$/g, "").trim();
         const rawSig = (
             (req.headers["x-webhook-signature"] as string) ||
             (req.headers["x-signature"] as string) ||
@@ -184,12 +185,40 @@ router.post(
         // 1. Mandatory Header Check: Signature must be present
         if (!sentSig) {
             console.warn(`[MoneyPings Webhook] Missing signature header. WebhookId: ${webhookId || "none"}. Headers:`, Object.keys(req.headers));
+            await prisma.auditLog.create({
+                data: {
+                    actorId: "SYSTEM",
+                    role: "ADMIN",
+                    action: "MONEYPINGS_WEBHOOK_MISSING_SIGNATURE",
+                    entity: "WebhookDelivery",
+                    entityId: webhookId || "whk_unidentified",
+                    ip: req.ip || "moneypings",
+                    metadata: {
+                        headers: req.headers,
+                        bodyLength: rawBytes.length
+                    }
+                }
+            }).catch(() => {});
             return res.status(401).json({ error: "bad signature" });
         }
 
         // 2. Secret Configuration Check (fail-closed if secret missing)
         if (!mpSecret || mpSecret.includes("placeholder") || mpSecret.includes("your_moneypings")) {
             console.error("[MoneyPings Webhook] MONEYPINGS_WEBHOOK_SECRET is not configured on server.");
+            await prisma.auditLog.create({
+                data: {
+                    actorId: "SYSTEM",
+                    role: "ADMIN",
+                    action: "MONEYPINGS_WEBHOOK_SECRET_NOT_CONFIGURED",
+                    entity: "WebhookDelivery",
+                    entityId: webhookId || "whk_unidentified",
+                    ip: req.ip || "moneypings",
+                    metadata: {
+                        hasSecretEnv: !!process.env.MONEYPINGS_WEBHOOK_SECRET,
+                        secretLen: rawSecret.length
+                    }
+                }
+            }).catch(() => {});
             return res.status(401).json({ error: "bad signature" });
         }
 
@@ -205,6 +234,27 @@ router.post(
 
         if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
             console.warn(`[MoneyPings Webhook] Invalid signature. ID: ${webhookId}, Sent: ${sentSig.substring(0, 10)}..., Expected: ${expectedSig.substring(0, 10)}..., BodyBytes: ${rawBytes.length}`);
+            await prisma.auditLog.create({
+                data: {
+                    actorId: "SYSTEM",
+                    role: "ADMIN",
+                    action: "MONEYPINGS_WEBHOOK_SIGNATURE_MISMATCH",
+                    entity: "WebhookDelivery",
+                    entityId: webhookId || "whk_unidentified",
+                    ip: req.ip || "moneypings",
+                    metadata: {
+                        webhookId,
+                        event: webhookEvent,
+                        sentSig,
+                        expectedSig,
+                        secretLen: mpSecret.length,
+                        secretPrefix: mpSecret.substring(0, 10),
+                        bodyBytesLen: rawBytes.length,
+                        bodyPreview: rawBytes.toString("utf8").substring(0, 200),
+                        allHeaders: req.headers
+                    }
+                }
+            }).catch(() => {});
             return res.status(401).json({ error: "bad signature" });
         }
 
