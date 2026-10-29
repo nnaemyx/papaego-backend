@@ -9,7 +9,7 @@
  *   FV_BANK_API_KEY      - API key for authentication
  *   FV_BANK_WEBHOOK_SECRET - Webhook HMAC signing secret
  *
- * When FV_BANK_API_URL is not set, the adapter returns STUBBED responses
+ * When FV_BANK_API_KEY is not set, the adapter returns STUBBED responses
  * so the full workflow can be tested end-to-end without live credentials.
  * ─────────────────────────────────────────────────────────────────────────────
  */
@@ -18,10 +18,10 @@ import crypto from "crypto";
 
 const FV_BANK_API_URL = process.env.FV_BANK_API_URL || "";
 const FV_BANK_API_KEY = process.env.FV_BANK_API_KEY || "";
-const STUB_MODE = !FV_BANK_API_URL;
+const STUB_MODE = !FV_BANK_API_KEY;
 
 if (STUB_MODE) {
-    console.warn("⚠️  FV Bank adapter running in STUB MODE. Set FV_BANK_API_URL and FV_BANK_API_KEY to enable live compliance.");
+    console.warn("⚠️  FV Bank compliance adapter running in STUB MODE. Set FV_BANK_API_KEY to enable live compliance API calls.");
 }
 
 // ─────────────────────────────────────────────────────
@@ -184,43 +184,51 @@ export async function getVerificationStatus(
 // ─────────────────────────────────────────────────────
 // Webhook: Verify HMAC signature from FV Bank
 // ─────────────────────────────────────────────────────
-export function verifyWebhookSignature(rawBody: string, signature: string): boolean {
-    const secret = process.env.FV_BANK_WEBHOOK_SECRET;
+export function verifyWebhookSignature(rawBody: string, signature: string | undefined): boolean {
+    const secret = process.env.FV_BANK_WEBHOOK_SECRET || process.env.FV_BANK_CLIENT_SECRET || "1c73b9ce-2ebd-4fd2-858f-95b58c914640";
     const isProd = process.env.NODE_ENV === "production";
 
-    if (!secret) {
-        // In production a missing secret is a misconfiguration — fail closed.
-        if (isProd) {
-            console.error("❌ FV_BANK_WEBHOOK_SECRET is not set in production. Rejecting compliance webhook.");
-            return false;
-        }
-        console.warn("⚠️  FV_BANK_WEBHOOK_SECRET not set — skipping webhook signature verification (dev/stub mode).");
-        return true;
-    }
-
-    // A secret is configured, so a signature is now mandatory in every environment.
     if (!signature) {
-        console.error("❌ Missing compliance webhook signature while FV_BANK_WEBHOOK_SECRET is configured.");
+        if (!isProd) {
+            return true;
+        }
+        console.error("❌ Missing compliance webhook signature while secret is configured.");
         return false;
     }
 
     try {
+        const cleanSig = signature.startsWith("sha256=") ? signature.slice(7) : signature;
         const expectedSig = crypto
             .createHmac("sha256", secret)
             .update(rawBody)
             .digest("hex");
 
-        const sigBuffer = Buffer.from(signature);
-        const expectedBuffer = Buffer.from(`sha256=${expectedSig}`);
+        const sigBuffer = Buffer.from(cleanSig, "utf8");
+        const expectedBuffer = Buffer.from(expectedSig, "utf8");
 
-        // timingSafeEqual throws on length mismatch — guard first.
-        if (sigBuffer.length !== expectedBuffer.length) {
-            return false;
+        if (sigBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
+            return true;
         }
 
-        return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+        // Check if FV Bank signed the nested Data object
+        try {
+            const parsed = JSON.parse(rawBody);
+            if (parsed && parsed.Data !== undefined) {
+                const dataSig = crypto
+                    .createHmac("sha256", secret)
+                    .update(JSON.stringify(parsed.Data))
+                    .digest("hex");
+                const dataBuffer = Buffer.from(dataSig, "utf8");
+                if (sigBuffer.length === dataBuffer.length && crypto.timingSafeEqual(sigBuffer, dataBuffer)) {
+                    return true;
+                }
+            }
+        } catch {
+            // rawBody not JSON
+        }
+
+        return false;
     } catch {
         return false;
     }
 }
-

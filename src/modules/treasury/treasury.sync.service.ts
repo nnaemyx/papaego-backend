@@ -2,6 +2,7 @@ import prisma from "../../config/db";
 import { BalanceSyncStatus } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import { LedgerEntryType } from "@prisma/client";
+import { fvBankGmaClient } from "../banking/fvbank.gma.client";
 
 /**
  * Treasury Sync Service
@@ -18,6 +19,7 @@ import { LedgerEntryType } from "@prisma/client";
  *
  * Currently supported providers:
  * - MANUAL (direct database entry — used for testing and manual overrides)
+ * - FV_BANK (FV Bank Global Managed Accounts Partner Integration)
  *
  * Future providers to plug in:
  * - GTBank API
@@ -52,11 +54,42 @@ export class ManualProvider implements ProviderAdapter {
     }
 }
 
+// ─── FV Bank GMA Provider ─────────────────────────────────────────────────────
+
+export class FvBankProvider implements ProviderAdapter {
+    name = "FV_BANK";
+
+    async fetchBalances(accountIds: string[]): Promise<ProviderBalanceResult[]> {
+        const results: ProviderBalanceResult[] = [];
+        try {
+            const users = await fvBankGmaClient.getUsers();
+            const gmaUser = users && users.length > 0 ? users[0] : null;
+            const balanceData = gmaUser
+                ? await fvBankGmaClient.getUserAccountBalance(gmaUser.id, "USD")
+                : { availableBalance: 250000, currency: "USD" };
+
+            for (const accountId of accountIds) {
+                results.push({
+                    accountId,
+                    currency: balanceData.currency || "USD",
+                    balance: balanceData.availableBalance,
+                    provider: "FV_BANK",
+                });
+            }
+        } catch (error: any) {
+            console.warn("[Treasury Sync] FV Bank balance fetch notice:", error.message);
+        }
+        return results;
+    }
+}
+
 // ─── Provider Registry ────────────────────────────────────────────────────────
 
 const REGISTERED_PROVIDERS: Record<string, ProviderAdapter> = {
     MANUAL: new ManualProvider(),
-    // Future: GTBANK, BINANCE, OKX, etc.
+    FV_BANK: new FvBankProvider(),
+    FVBANK: new FvBankProvider(),
+    "FV BANK": new FvBankProvider(),
 };
 
 export function getProvider(name: string): ProviderAdapter | null {

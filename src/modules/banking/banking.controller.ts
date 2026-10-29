@@ -161,8 +161,8 @@ export async function syncAccount(req: Request, res: Response, next: NextFunctio
 // ─────────────────────────────────────────────────────
 export async function handleBankingWebhook(req: Request, res: Response, next: NextFunction) {
     try {
-        const rawBody = (req as any).rawBody || JSON.stringify(req.body);
-        const signature = req.headers["x-fvbank-signature"] as string | undefined;
+        const rawBody = (req as any).rawBodyText || ((req as any).rawBody ? (req as any).rawBody.toString("utf8") : JSON.stringify(req.body));
+        const signature = (req.headers["x-signature"] || req.headers["x-fvbank-signature"]) as string | undefined;
 
         const result = await processBankingWebhook(rawBody, signature, req.body);
         res.json({ status: "OK", ...result });
