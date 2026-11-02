@@ -230,15 +230,17 @@ export async function submitKycApplication(payload: DcKycPayload): Promise<DcApp
         }
     });
 
-    const verificationId = response?.verificationId || response?.sessionId || response?.applicationId || `dc_kyc_${Date.now()}`;
+    const verificationId = response?.externalReference || response?.verificationId || response?.sessionId || response?.applicationId || `dc_kyc_${Date.now()}`;
+    const rawUrl = response?.url || "";
+    const secureUrl = rawUrl ? rawUrl.replace(/^http:\/\//i, "https://") : undefined;
 
     return {
         applicationId: verificationId,
         verificationId,
         status: response?.status || "SUBMITTED",
-        url: response?.url, // Liveness / face verification URL from DuckCheck
+        url: secureUrl, // Liveness / face verification URL from DuckCheck (enforce HTTPS for camera access)
         submittedAt: new Date().toISOString(),
-        message: response?.url 
+        message: secureUrl 
             ? "DuckCheck KYC session initiated. Live face verification required." 
             : "DuckCheck KYC session initiated"
     };

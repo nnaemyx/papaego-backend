@@ -28,16 +28,16 @@ export async function handleFvBankWebhook(req: Request, res: Response, next: Nex
         // KYC: { sessionId: "...", status: "approved" | "rejected", person: {...} }
         // KYB: { requestId: "...", verificationResult: "APPROVED" | "REJECTED", eventType: "BUSINESS_VERIFICATION", reason: "..." }
         let applicationType: "KYC" | "KYB" = payload.applicationType;
-        let applicationId: string = payload.applicationId || payload.sessionId || payload.requestId || payload.id;
+        let applicationId: string = payload.applicationId || payload.sessionId || payload.requestId || payload.id || payload.externalReference;
         let event: string = payload.event || payload.eventType || "VERIFICATION_DECISION";
         let status: string = payload.status;
         let rejectionReason: string = payload.rejectionReason || payload.reason;
         let additionalInfoNote: string = payload.additionalInfoNote;
         let partnerOrgId: string = payload.partnerOrgId;
 
-        if (payload.sessionId || payload.person) {
+        if (payload.sessionId || payload.person || payload.externalReference) {
             applicationType = "KYC";
-            applicationId = payload.sessionId;
+            applicationId = payload.sessionId || payload.externalReference || applicationId;
             status = payload.status === "approved" ? "APPROVED" : payload.status === "rejected" ? "REJECTED" : payload.status;
         } else if (payload.eventType === "BUSINESS_VERIFICATION" || payload.verificationResult || payload.documentResults) {
             applicationType = "KYB";
@@ -85,8 +85,14 @@ export async function handleFvBankWebhook(req: Request, res: Response, next: Nex
         try {
             // 4. Process based on application type — atomically per entity
             if (applicationType === "KYC") {
+                const candidateCustomerId = payload.customerId || payload.customer?.customerId;
                 const kyc = await prisma.kycRequest.findFirst({
-                    where: { fvBankApplicationId: applicationId }
+                    where: {
+                        OR: [
+                            { fvBankApplicationId: applicationId },
+                            ...(candidateCustomerId ? [{ id: candidateCustomerId }] : [])
+                        ]
+                    }
                 });
 
                 if (kyc) {
