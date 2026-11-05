@@ -169,8 +169,8 @@ async function testBusinessLookup(token: string): Promise<void> {
 // 4. KYC IDV Session (requires valid token)
 // ──────────────────────────────────────────────────────────────────────────────
 async function testKycSession(token: string): Promise<void> {
-    console.log("🪪 Test: KYC IDV Session - Nigerian Passport Holder");
-    console.log("   Person: Adewale Okonkwo | DOB: 1985-06-15 | Passport: A12345678");
+    console.log("🪪 Test: KYC IDV Session - Nigerian NIN Holder");
+    console.log("   Person: Adewale Okonkwo | DOB: 1985-06-15 | NIN: 12345678901");
 
     const res = await fetch(`${BASE_URL}/v1/product/idv/session`, {
         method: "POST",
@@ -193,8 +193,8 @@ async function testKycSession(token: string): Promise<void> {
                 deviceFingerprint: "papaego-web-test"
             },
             document: {
-                value:        "A12345678",
-                identityType: "PASSPORT",
+                value:        "12345678901",
+                identityType: "NIN",
                 country:      "NG"
             }
         }),

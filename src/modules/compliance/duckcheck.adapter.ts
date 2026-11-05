@@ -195,14 +195,14 @@ export async function submitKycApplication(payload: DcKycPayload): Promise<DcApp
 
     const identityTypeMapping: Record<string, string> = {
         "NATIONAL_ID": "NIN",
-        "PASSPORT": "PASSPORT",
-        "DRIVERS_LICENSE": "DRIVERS_LICENSE",
+        "PASSPORT": "NIN", // DuckCheck currently only supports NIN for IDV
+        "DRIVERS_LICENSE": "NIN",
         "BVN": "NIN",
         "NIN": "NIN"
     };
 
     if (!payload.idNumber || payload.idNumber.trim() === "") {
-        throw new Error("Document ID Number is required for DuckCheck identity verification.");
+        throw new Error("National Identification Number (NIN) is required for DuckCheck identity verification.");
     }
 
     const webhookUrl = process.env.DUCKCHECK_CALLBACK_URL || process.env.WEBHOOK_BASE_URL
@@ -225,7 +225,7 @@ export async function submitKycApplication(payload: DcKycPayload): Promise<DcApp
         },
         document: {
             value: payload.idNumber.trim(),
-            identityType: identityTypeMapping[payload.idType] || "PASSPORT",
+            identityType: identityTypeMapping[payload.idType] || "NIN",
             country: payload.nationality?.length === 2 ? payload.nationality : "NG"
         }
     });
