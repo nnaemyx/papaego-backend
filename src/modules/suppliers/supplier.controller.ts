@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
+import { fvBankGmaClient } from "../banking/fvbank.gma.client";
 
 // GET /api/suppliers
 // Get all suppliers for the authenticated customer
@@ -84,6 +85,40 @@ export const createSupplier = async (req: Request, res: Response) => {
                 address
             }
         });
+
+        // ── PUSH TO FV BANK SANDBOX AS A COUNTERPARTY ─────────────────────────
+        // In FV Bank GMA, suppliers/beneficiaries are registered as Counterparties
+        // with payment instruments (ACH or SWIFT wire rails).
+        try {
+            const member = await prisma.organizationMember.findFirst({
+                where: { userId },
+                include: { organization: { include: { bankAccount: true } } }
+            });
+            const fvUserId = member?.organization?.bankAccount?.fvAccountId || "usr_fv_papaego_treasury_01";
+
+            const cpty = await fvBankGmaClient.createCounterparty(fvUserId, {
+                name: beneficiaryName,
+                type: "CORPORATE",
+                country: "US",
+                address: { street: address || "N/A", country: "US" },
+                identification: iban ? { type: "IBAN", number: iban } : undefined
+            });
+
+            if (cpty && cpty.counterpartyId) {
+                await fvBankGmaClient.createPaymentInstrument(fvUserId, cpty.counterpartyId, {
+                    instrumentType: (swiftBic || iban) ? "WIRE" : "ACH",
+                    accountNumber: accountNumber || iban || "N/A",
+                    routingNumber: routingCode || undefined,
+                    swiftBic: swiftBic || undefined,
+                    bankName: bankName || "FV Bank",
+                    currency: currency || "USD",
+                    beneficiaryName
+                });
+                console.log(`🔌 [FV Bank Sandbox] Registered supplier "${beneficiaryName}" as Counterparty: ${cpty.counterpartyId}`);
+            }
+        } catch (fvErr: any) {
+            console.warn(`⚠️ [FV Bank Sandbox Counterparty Notice]: ${fvErr.message}`);
+        }
 
         res.status(201).json(supplier);
     } catch (error) {

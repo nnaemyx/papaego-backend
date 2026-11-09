@@ -77,6 +77,7 @@ import {
     updateKybStatus,
     updateOrganizationStatus,
     adminProvisionBank,
+    adminPushToFvBank,
     deleteOrganization
 } from "./admin.organizations.controller";
 import {
@@ -181,6 +182,7 @@ router.post("/organizations/:id/kyc/status", updateKycStatus);
 router.post("/organizations/:id/kyb/status", updateKybStatus);
 router.post("/organizations/:id/status", updateOrganizationStatus);
 router.post("/organizations/:id/provision-bank", adminProvisionBank);
+router.post("/organizations/:id/push-to-fvbank", adminPushToFvBank);
 router.delete("/organizations/:id", deleteOrganization);
 
 // ── Wallet & Deposits (Admin) ────────────────────────────────────────────────

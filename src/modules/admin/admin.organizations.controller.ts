@@ -10,6 +10,7 @@ import { Request, Response, NextFunction } from "express";
 import prisma from "../../config/db";
 import { recordStatusChange } from "../compliance/status.service";
 import { provisionManagedAccount } from "../banking/banking.provisioning.service";
+import { submitBusinessPlusApplication } from "../banking/fvbank.onboarding.adapter";
 
 // ─────────────────────────────────────────────────────
 // GET /admin/organizations
@@ -239,6 +240,84 @@ export async function updateKybStatus(req: Request, res: Response, next: NextFun
                 changedBy: adminId,
                 reason: "Both KYC and KYB approved. Admin activated organization."
             });
+
+            // ── PUSH TO FV BANK ONBOARDING (Applications v2) ───────────────────
+            // Now that KYC + KYB are both approved, submit a Business Plus
+            // application to FV Bank so this customer appears in the Sandbox
+            // Portal under Users/Accounts and is ready for UAT transactions.
+            try {
+                const fullOrg = await prisma.organization.findUnique({
+                    where: { id },
+                    include: {
+                        owner: { select: { email: true, firstName: true, lastName: true, phone: true } },
+                        kybRequest: true,
+                        kycRequests: { orderBy: { createdAt: "desc" }, take: 1 }
+                    }
+                });
+
+                if (fullOrg) {
+                    const kyb = fullOrg.kybRequest;
+                    const directors: any[] = Array.isArray(kyb?.directors) ? (kyb!.directors as any[]) : [];
+                    const ubos: any[]       = Array.isArray(kyb?.ubos)      ? (kyb!.ubos      as any[]) : [];
+
+                    const fvAppRes = await submitBusinessPlusApplication({
+                        partnerReferenceId: fullOrg.id,
+                        business: {
+                            businessName:              fullOrg.businessName,
+                            businessRegistrationNumber: fullOrg.registrationNumber || undefined,
+                            countryOfRegistration:     fullOrg.countryOfRegistration,
+                            businessType:              fullOrg.businessType,
+                            industry:                  fullOrg.industry || undefined,
+                            taxIdentification:         kyb?.taxIdentification || undefined,
+                            businessAddress:           kyb?.businessAddress   || fullOrg.countryOfRegistration,
+                        },
+                        primaryContact: {
+                            fullName: fullOrg.owner
+                                ? `${fullOrg.owner.firstName} ${fullOrg.owner.lastName}`.trim()
+                                : fullOrg.authorizedRepName || fullOrg.businessName,
+                            email: fullOrg.contactEmail,
+                            phone: fullOrg.contactPhone || fullOrg.owner?.phone || undefined,
+                        },
+                        directors: directors.map((d: any) => ({
+                            fullName:            d.name || d.fullName || "Director",
+                            role:                "DIRECTOR" as const,
+                            email:               d.email,
+                            nationality:         d.nationality,
+                            dateOfBirth:         d.dateOfBirth,
+                            residentialAddress:  d.address,
+                            identityType:        d.identityType,
+                            identityNumber:      d.identityNumber,
+                        })),
+                        ubos: ubos.map((u: any) => ({
+                            fullName:             u.name || u.fullName || "UBO",
+                            role:                 "UBO" as const,
+                            email:                u.email,
+                            nationality:          u.nationality,
+                            dateOfBirth:          u.dateOfBirth,
+                            residentialAddress:   u.address,
+                            ownershipPercentage:  u.ownershipPercentage || u.percentage,
+                        })),
+                    });
+
+                    // Store the FV Bank applicationId on the KYB record for webhook correlation
+                    if (kyb && fvAppRes.applicationId) {
+                        await prisma.kybRequest.update({
+                            where: { organizationId: id },
+                            data: { fvBankApplicationId: fvAppRes.applicationId }
+                        });
+                    }
+
+                    console.log(
+                        `🏦 [FV Bank Onboarding] Business Plus application submitted for org "${fullOrg.businessName}" ` +
+                        `(ID: ${fullOrg.id}). FV App ID: ${fvAppRes.applicationId}, Status: ${fvAppRes.status}`
+                    );
+                }
+            } catch (fvErr: any) {
+                // Non-blocking — do not fail the KYB approval if FV Bank push fails
+                console.warn(
+                    `⚠️  [FV Bank Onboarding] Failed to submit Business Plus application for org ${id}: ${fvErr.message}`
+                );
+            }
         }
 
         res.json({ message: `KYB status updated to ${status}`, kyb: updatedKyb });
@@ -305,6 +384,89 @@ export async function adminProvisionBank(req: Request, res: Response, next: Next
             message: "Managed U.S. bank account provisioned successfully.",
             bankAccount: result.bankAccount,
             bankingProfile: result.bankingProfile
+        });
+    } catch (error: any) {
+        res.status(400).json({ error: error.message });
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// POST /admin/organizations/:id/push-to-fvbank
+// Admin manually (re-)submits a Business Plus application to FV Bank so that
+// an already-approved organization appears in the Sandbox Portal.
+// Safe to call multiple times — FV Bank uses PartnerReferenceId for deduplication.
+// ─────────────────────────────────────────────────────
+export async function adminPushToFvBank(req: Request, res: Response, next: NextFunction) {
+    try {
+        const { id } = req.params;
+
+        const org = await prisma.organization.findUnique({
+            where: { id },
+            include: {
+                owner: { select: { email: true, firstName: true, lastName: true, phone: true } },
+                kybRequest: true,
+            }
+        });
+
+        if (!org) {
+            return res.status(404).json({ error: "Organization not found." });
+        }
+
+        const kyb     = org.kybRequest;
+        const directors: any[] = Array.isArray(kyb?.directors) ? (kyb!.directors as any[]) : [];
+        const ubos: any[]       = Array.isArray(kyb?.ubos)      ? (kyb!.ubos      as any[]) : [];
+
+        const fvAppRes = await submitBusinessPlusApplication({
+            partnerReferenceId: org.id,
+            business: {
+                businessName:              org.businessName,
+                businessRegistrationNumber: org.registrationNumber || undefined,
+                countryOfRegistration:     org.countryOfRegistration,
+                businessType:              org.businessType,
+                industry:                  org.industry || undefined,
+                taxIdentification:         kyb?.taxIdentification || undefined,
+                businessAddress:           kyb?.businessAddress   || org.countryOfRegistration,
+            },
+            primaryContact: {
+                fullName: org.owner
+                    ? `${org.owner.firstName} ${org.owner.lastName}`.trim()
+                    : org.authorizedRepName || org.businessName,
+                email: org.contactEmail,
+                phone: org.contactPhone || org.owner?.phone || undefined,
+            },
+            directors: directors.map((d: any) => ({
+                fullName:           d.name || d.fullName || "Director",
+                role:               "DIRECTOR" as const,
+                email:              d.email,
+                nationality:        d.nationality,
+                dateOfBirth:        d.dateOfBirth,
+                residentialAddress: d.address,
+                identityType:       d.identityType,
+                identityNumber:     d.identityNumber,
+            })),
+            ubos: ubos.map((u: any) => ({
+                fullName:            u.name || u.fullName || "UBO",
+                role:                "UBO" as const,
+                email:               u.email,
+                nationality:         u.nationality,
+                dateOfBirth:         u.dateOfBirth,
+                residentialAddress:  u.address,
+                ownershipPercentage: u.ownershipPercentage || u.percentage,
+            })),
+        });
+
+        // Store the returned applicationId on the KYB record
+        if (kyb && fvAppRes.applicationId) {
+            await prisma.kybRequest.update({
+                where: { organizationId: id },
+                data: { fvBankApplicationId: fvAppRes.applicationId }
+            });
+        }
+
+        res.status(201).json({
+            message: `Business Plus application submitted to FV Bank for "${org.businessName}".`,
+            fvBankApplicationId: fvAppRes.applicationId,
+            fvBankStatus: fvAppRes.status,
         });
     } catch (error: any) {
         res.status(400).json({ error: error.message });
