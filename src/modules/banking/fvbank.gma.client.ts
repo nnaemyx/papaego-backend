@@ -206,11 +206,12 @@ export class FvBankGmaClient {
 
             if (!res.ok) {
                 const text = await res.text();
+                console.error(`🚨 [FV Bank GMA Auth ERROR] Status: ${res.status}, Response: ${text}`);
                 // If the remote gateway responds with 403 / 401 (e.g. while IP whitelisting in FV Bank portal is pending),
                 // log diagnostic information and fall back gracefully to simulation mode so no other app flow is impacted.
                 if (res.status === 403 || res.status === 401) {
                     console.warn(
-                        `⚠️  [FV Bank GMA Auth] Sandbox returned HTTP ${res.status}. Note: GMA API access requires IP whitelisting in FV Bank Sandbox Portal. Seamlessly continuing via simulation fallback.`
+                        `⚠️  [FV Bank GMA Auth] Sandbox returned HTTP ${res.status}. Response Body: "${text}". Note: GMA API access requires IP whitelisting in FV Bank Sandbox Portal. Seamlessly continuing via simulation fallback.`
                     );
                     this.isSimulation = true;
                     return "simulated_gma_session_token_" + Date.now();

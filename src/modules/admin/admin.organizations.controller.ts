@@ -399,6 +399,7 @@ export async function adminProvisionBank(req: Request, res: Response, next: Next
 export async function adminPushToFvBank(req: Request, res: Response, next: NextFunction) {
     try {
         const { id } = req.params;
+        console.log(`[Admin] Initiating FV Bank Push for Org ID: ${id}`);
 
         const org = await prisma.organization.findUnique({
             where: { id },
@@ -411,6 +412,8 @@ export async function adminPushToFvBank(req: Request, res: Response, next: NextF
         if (!org) {
             return res.status(404).json({ error: "Organization not found." });
         }
+
+        console.log(`[Admin] Found Org: ${org.businessName}. Submitting Business Plus Application...`);
 
         const kyb     = org.kybRequest;
         const directors: any[] = Array.isArray(kyb?.directors) ? (kyb!.directors as any[]) : [];
@@ -455,6 +458,8 @@ export async function adminPushToFvBank(req: Request, res: Response, next: NextF
             })),
         });
 
+        console.log(`[Admin] FV Bank Push result:`, fvAppRes);
+
         // Store the returned applicationId on the KYB record
         if (kyb && fvAppRes.applicationId) {
             await prisma.kybRequest.update({
@@ -467,8 +472,10 @@ export async function adminPushToFvBank(req: Request, res: Response, next: NextF
             message: `Business Plus application submitted to FV Bank for "${org.businessName}".`,
             fvBankApplicationId: fvAppRes.applicationId,
             fvBankStatus: fvAppRes.status,
+            isSimulation: fvAppRes.applicationId.startsWith("fv_app_"),
         });
     } catch (error: any) {
+        console.error(`[Admin] FV Bank Push failed with error:`, error);
         res.status(400).json({ error: error.message });
     }
 }
