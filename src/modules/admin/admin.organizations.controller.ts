@@ -415,6 +415,10 @@ export async function adminPushToFvBank(req: Request, res: Response, next: NextF
 
         console.log(`[Admin] Found Org: ${org.businessName}. Submitting Business Plus Application...`);
 
+        // Force a live retry when admin explicitly pushes from UI
+        const { fvBankGmaClient } = await import("../banking/fvbank.gma.client");
+        fvBankGmaClient.resetSimulation();
+
         const kyb     = org.kybRequest;
         const directors: any[] = Array.isArray(kyb?.directors) ? (kyb!.directors as any[]) : [];
         const ubos: any[]       = Array.isArray(kyb?.ubos)      ? (kyb!.ubos      as any[]) : [];

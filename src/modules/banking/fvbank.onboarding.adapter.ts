@@ -144,18 +144,6 @@ function simulateApplicationResponse(
 export async function submitBusinessPlusApplication(
     payload: FvBusinessPlusApplicationPayload
 ): Promise<FvBusinessPlusApplicationResponse> {
-    // Gracefully handle IP-whitelist / auth errors with simulation fallback
-    if (fvBankGmaClient.isSimulationMode()) {
-        const result = simulateApplicationResponse(
-            payload.partnerReferenceId,
-            payload.business.businessName
-        );
-        console.log(
-            `ℹ️  [FV Bank Onboarding] Simulation mode — application for "${payload.business.businessName}" queued locally (ID: ${result.applicationId}).`
-        );
-        return result;
-    }
-
     try {
         const response = await gmaRequest<FvBusinessPlusApplicationResponse>(
             "POST",
