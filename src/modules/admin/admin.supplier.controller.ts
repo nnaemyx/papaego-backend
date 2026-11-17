@@ -158,22 +158,26 @@ export async function createSupplier(req: Request, res: Response) {
 
         // Push to FV Bank GMA Sandbox as Counterparty & Payment Instrument
         try {
-            const fvUserId = "usr_fv_papaego_treasury_01";
-            const cpty = await fvBankGmaClient.createCounterparty(fvUserId, {
-                name: businessName,
-                type: "CORPORATE",
-                country: "US",
-                address: { street: address || "N/A", country: "US" }
-            });
-            if (cpty && cpty.counterpartyId) {
-                await fvBankGmaClient.createPaymentInstrument(fvUserId, cpty.counterpartyId, {
-                    instrumentType: "ACH",
-                    accountNumber: accountNumber,
-                    bankName: bankName,
-                    currency: "USD",
-                    beneficiaryName: businessName
+            if (fvBankGmaClient.isSimulationMode()) {
+                console.log(`ℹ️  [FV Bank Sandbox] Skipping counterparty push for "${businessName}" — API in simulation mode (IP whitelist pending).`);
+            } else {
+                const fvUserId = "usr_fv_papaego_treasury_01";
+                const cpty = await fvBankGmaClient.createCounterparty(fvUserId, {
+                    name: businessName,
+                    type: "CORPORATE",
+                    country: "US",
+                    address: { street: address || "N/A", country: "US" }
                 });
-                console.log(`🔌 [FV Bank Sandbox] Admin registered supplier "${businessName}" as Counterparty: ${cpty.counterpartyId}`);
+                if (cpty && cpty.counterpartyId) {
+                    await fvBankGmaClient.createPaymentInstrument(fvUserId, cpty.counterpartyId, {
+                        instrumentType: "ACH",
+                        accountNumber: accountNumber,
+                        bankName: bankName,
+                        currency: "USD",
+                        beneficiaryName: businessName
+                    });
+                    console.log(`🔌 [FV Bank Sandbox] Admin registered supplier "${businessName}" as Counterparty: ${cpty.counterpartyId}`);
+                }
             }
         } catch (fvErr: any) {
             console.warn(`⚠️ [FV Bank Sandbox Counterparty Notice]: ${fvErr.message}`);

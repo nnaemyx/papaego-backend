@@ -73,21 +73,23 @@ export async function requestManagedAccount(payload: FvCreateAccountPayload): Pr
     let gmaUserId: string | null = null;
 
     try {
-        const users = await fvBankGmaClient.getUsers();
-        if (users && users.length > 0) {
-            const matched = users.find(u => u.email === payload.contactEmail) || users[0];
-            gmaUserId = matched.id;
+        if (!fvBankGmaClient.isSimulationMode()) {
+            const users = await fvBankGmaClient.getUsers();
+            if (users && users.length > 0) {
+                const matched = users.find(u => u.email === payload.contactEmail) || users[0];
+                gmaUserId = matched.id;
+            }
         }
     } catch (err: any) {
         console.warn(`[FV Bank Adapter] GMA users query notice: ${err.message}. Proceeding with provisioning.`);
     }
 
-    const fvAccountId = gmaUserId || `fv_gma_${timestamp}_${Math.random().toString(36).slice(2, 8)}`;
-    const randomAccNum = Math.floor(1000000000 + Math.random() * 9000000000).toString();
+    const isLive = !!gmaUserId && !gmaUserId.startsWith("usr_fv_papaego_");
+    const fvAccountId = gmaUserId || `fv_pending_${timestamp}_${Math.random().toString(36).slice(2, 8)}`;
 
     return {
         fvAccountId,
-        accountNumber: randomAccNum,
+        accountNumber: isLive ? fvAccountId : "PENDING_FV_BANK_APPROVAL",
         routingNumber: "021000021", // Official FV Bank U.S. Routing Number
         accountHolder: payload.accountHolderName || payload.companyName || "Papa Ego Customer",
         bankName: "FV Bank",
@@ -95,8 +97,10 @@ export async function requestManagedAccount(payload: FvCreateAccountPayload): Pr
         country: "United States",
         swiftBic: "FVBKUS33XXX",
         accountReference: `REF-${timestamp.toString().slice(-6)}`,
-        status: "ACTIVE",
-        message: "Managed U.S. bank account provisioned successfully via FV Bank GMA.",
+        status: isLive ? "ACTIVE" : "PENDING_APPROVAL",
+        message: isLive
+            ? "Managed U.S. bank account provisioned successfully via FV Bank GMA."
+            : "Account provisioning submitted — awaiting FV Bank approval. Account details will be populated via webhook once approved.",
         createdAt: new Date().toISOString()
     };
 }

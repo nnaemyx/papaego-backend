@@ -133,6 +133,10 @@ export class FvBankGmaClient {
     private sessionToken: string | null = null;
     private sessionExpiresAt: number = 0;
     private isSimulation: boolean = false;
+    /** Timestamp (epoch ms) of the last failed live auth attempt */
+    private lastAuthFailureAt: number = 0;
+    /** How long (ms) to wait before retrying the live API after a failure — 5 minutes */
+    private static readonly AUTH_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 
     constructor() {
         this.baseUrl = (
@@ -160,13 +164,40 @@ export class FvBankGmaClient {
     }
 
     /**
+     * Reset simulation mode so the next API call retries the live gateway.
+     * Called automatically after AUTH_RETRY_INTERVAL_MS, or manually via admin endpoint.
+     */
+    public resetSimulation(): void {
+        if (this.isSimulation && this.isConfigured()) {
+            this.isSimulation = false;
+            this.sessionToken = null;
+            this.sessionExpiresAt = 0;
+            console.log("🔄 [FV Bank GMA] Simulation mode reset — will retry live API on next call.");
+        }
+    }
+
+    /**
      * Obtains or refreshes the GMA session token.
      * Complies with official FV Bank GMA Partner API specification:
-     *  - Signs HS256 JWT using ClientID & ClientSecret (with exp + 3000s)
+     *  - Signs HS256 JWT using ClientID & ClientSecret (with exp + 300s)
      *  - Exchanges JWT at GET /auth via 'x-auth-token' for a session-token
      *  - Proactively caches and renews session tokens
+     *  - Falls back to simulation on 403/401 but AUTO-RETRIES after 5 minutes
      */
     public async getSessionToken(): Promise<string> {
+        // If in simulation but enough time has passed since last failure, retry live API
+        if (this.isSimulation && this.isConfigured()) {
+            const timeSinceFailure = Date.now() - this.lastAuthFailureAt;
+            if (timeSinceFailure >= FvBankGmaClient.AUTH_RETRY_INTERVAL_MS) {
+                console.log("🔄 [FV Bank GMA] Retry interval elapsed — attempting live API auth again...");
+                this.isSimulation = false;
+                this.sessionToken = null;
+                this.sessionExpiresAt = 0;
+            } else {
+                return "simulated_gma_session_token_" + Date.now();
+            }
+        }
+
         if (this.isSimulation) {
             return "simulated_gma_session_token_" + Date.now();
         }
@@ -179,12 +210,11 @@ export class FvBankGmaClient {
 
         try {
             // Step 1: Generate HS256 authorization JWT matching FV Bank GMA Spec
+            // Only include fields specified in FV Bank docs: ClientID, iat, exp
             const payload = {
                 ClientID: this.clientId,
-                iss: this.clientId,
-                aud: this.baseUrl,
                 iat: now,
-                exp: now + 3000,
+                exp: now + 300,
             };
 
             const authToken = jwt.sign(payload, this.clientSecret, {
@@ -197,10 +227,7 @@ export class FvBankGmaClient {
                 method: "GET",
                 headers: {
                     "x-auth-token": authToken,
-                    "X-AUTH-TOKEN": authToken,
-                    "Authorization": `Bearer ${authToken}`,
                     "Accept": "application/json",
-                    "Content-Type": "application/json",
                 },
             });
 
@@ -209,11 +236,15 @@ export class FvBankGmaClient {
                 console.error(`🚨 [FV Bank GMA Auth ERROR] Status: ${res.status}, Response: ${text}`);
                 // If the remote gateway responds with 403 / 401 (e.g. while IP whitelisting in FV Bank portal is pending),
                 // log diagnostic information and fall back gracefully to simulation mode so no other app flow is impacted.
+                // Simulation is TEMPORARY — will auto-retry after AUTH_RETRY_INTERVAL_MS.
                 if (res.status === 403 || res.status === 401) {
                     console.warn(
-                        `⚠️  [FV Bank GMA Auth] Sandbox returned HTTP ${res.status}. Response Body: "${text}". Note: GMA API access requires IP whitelisting in FV Bank Sandbox Portal. Seamlessly continuing via simulation fallback.`
+                        `⚠️  [FV Bank GMA Auth] Sandbox returned HTTP ${res.status}. Response Body: "${text}". ` +
+                        `Note: GMA API access requires IP whitelisting in FV Bank Sandbox Portal. ` +
+                        `Will retry live API in ${FvBankGmaClient.AUTH_RETRY_INTERVAL_MS / 60000} minutes. Continuing via simulation fallback.`
                     );
                     this.isSimulation = true;
+                    this.lastAuthFailureAt = Date.now();
                     return "simulated_gma_session_token_" + Date.now();
                 }
                 throw new Error(`FV Bank GMA Auth failed (${res.status}): ${text}`);
@@ -232,14 +263,21 @@ export class FvBankGmaClient {
                 throw new Error("Missing session-token in FV Bank GMA auth response");
             }
 
+            // Live auth succeeded — ensure simulation is off
+            if (this.lastAuthFailureAt > 0) {
+                console.log("✅ [FV Bank GMA] Live API auth succeeded! Exiting simulation mode.");
+            }
+            this.isSimulation = false;
+            this.lastAuthFailureAt = 0;
             this.sessionToken = sessionToken;
             const expiresIn = data.expiresIn || 900;
             this.sessionExpiresAt = now + expiresIn;
 
             return sessionToken;
         } catch (error: any) {
-            console.warn(`⚠️  [FV Bank GMA Auth] Error: ${error.message}. Continuing with simulated session.`);
+            console.warn(`⚠️  [FV Bank GMA Auth] Error: ${error.message}. Will retry in ${FvBankGmaClient.AUTH_RETRY_INTERVAL_MS / 60000} minutes. Continuing with simulated session.`);
             this.isSimulation = true;
+            this.lastAuthFailureAt = Date.now();
             return "simulated_gma_session_token_" + Date.now();
         }
     }
@@ -265,8 +303,6 @@ export class FvBankGmaClient {
                 headers: {
                     "Content-Type": "application/json",
                     "session-token": sessionToken,
-                    "x-auth-token": sessionToken,
-                    "Authorization": `Bearer ${sessionToken}`,
                     "Accept": "application/json",
                 },
                 body: body ? JSON.stringify(body) : undefined,

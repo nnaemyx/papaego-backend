@@ -80,6 +80,11 @@ async function gmaRequest<T>(
     path: string,
     body?: unknown
 ): Promise<T> {
+    // If already in simulation mode, skip the network call entirely
+    if (fvBankGmaClient.isSimulationMode()) {
+        throw new Error("FV Bank API in simulation mode — skipping live call");
+    }
+
     const baseUrl = (
         process.env.FV_BANK_GMA_URL ||
         process.env.FV_BANK_API_URL ||
@@ -88,13 +93,16 @@ async function gmaRequest<T>(
 
     const sessionToken = await fvBankGmaClient.getSessionToken();
 
+    // If getSessionToken() just flipped to simulation, bail out
+    if (fvBankGmaClient.isSimulationMode()) {
+        throw new Error("FV Bank API in simulation mode after auth attempt — skipping live call");
+    }
+
     const res = await fetch(`${baseUrl}${path}`, {
         method,
         headers: {
             "Content-Type": "application/json",
             "session-token": sessionToken,
-            "x-auth-token": sessionToken,
-            "Authorization": `Bearer ${sessionToken}`,
             "Accept": "application/json",
         },
         body: body ? JSON.stringify(body) : undefined,

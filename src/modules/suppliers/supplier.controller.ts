@@ -89,32 +89,41 @@ export const createSupplier = async (req: Request, res: Response) => {
         // ── PUSH TO FV BANK SANDBOX AS A COUNTERPARTY ─────────────────────────
         // In FV Bank GMA, suppliers/beneficiaries are registered as Counterparties
         // with payment instruments (ACH or SWIFT wire rails).
+        // Only attempt if the live API is accessible (skip in simulation mode).
         try {
-            const member = await prisma.organizationMember.findFirst({
-                where: { userId },
-                include: { organization: { include: { bankAccount: true } } }
-            });
-            const fvUserId = member?.organization?.bankAccount?.fvAccountId || "usr_fv_papaego_treasury_01";
-
-            const cpty = await fvBankGmaClient.createCounterparty(fvUserId, {
-                name: beneficiaryName,
-                type: "CORPORATE",
-                country: "US",
-                address: { street: address || "N/A", country: "US" },
-                identification: iban ? { type: "IBAN", number: iban } : undefined
-            });
-
-            if (cpty && cpty.counterpartyId) {
-                await fvBankGmaClient.createPaymentInstrument(fvUserId, cpty.counterpartyId, {
-                    instrumentType: (swiftBic || iban) ? "WIRE" : "ACH",
-                    accountNumber: accountNumber || iban || "N/A",
-                    routingNumber: routingCode || undefined,
-                    swiftBic: swiftBic || undefined,
-                    bankName: bankName || "FV Bank",
-                    currency: currency || "USD",
-                    beneficiaryName
+            if (fvBankGmaClient.isSimulationMode()) {
+                console.log(`ℹ️  [FV Bank Sandbox] Skipping counterparty push for "${beneficiaryName}" — API in simulation mode (IP whitelist pending).`);
+            } else {
+                const member = await prisma.organizationMember.findFirst({
+                    where: { userId },
+                    include: { organization: { include: { bankAccount: true } } }
                 });
-                console.log(`🔌 [FV Bank Sandbox] Registered supplier "${beneficiaryName}" as Counterparty: ${cpty.counterpartyId}`);
+                const fvUserId = member?.organization?.bankAccount?.fvAccountId;
+
+                if (!fvUserId || fvUserId.startsWith("fv_pending_")) {
+                    console.warn(`⚠️  [FV Bank Sandbox] No live FV Bank user ID for org. Skipping counterparty push for "${beneficiaryName}".`);
+                } else {
+                    const cpty = await fvBankGmaClient.createCounterparty(fvUserId, {
+                        name: beneficiaryName,
+                        type: "CORPORATE",
+                        country: "US",
+                        address: { street: address || "N/A", country: "US" },
+                        identification: iban ? { type: "IBAN", number: iban } : undefined
+                    });
+
+                    if (cpty && cpty.counterpartyId) {
+                        await fvBankGmaClient.createPaymentInstrument(fvUserId, cpty.counterpartyId, {
+                            instrumentType: (swiftBic || iban) ? "WIRE" : "ACH",
+                            accountNumber: accountNumber || iban || "N/A",
+                            routingNumber: routingCode || undefined,
+                            swiftBic: swiftBic || undefined,
+                            bankName: bankName || "FV Bank",
+                            currency: currency || "USD",
+                            beneficiaryName
+                        });
+                        console.log(`🔌 [FV Bank Sandbox] Registered supplier "${beneficiaryName}" as Counterparty: ${cpty.counterpartyId}`);
+                    }
+                }
             }
         } catch (fvErr: any) {
             console.warn(`⚠️ [FV Bank Sandbox Counterparty Notice]: ${fvErr.message}`);
