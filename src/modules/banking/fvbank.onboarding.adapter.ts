@@ -18,7 +18,8 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { fvBankGmaClient } from "./fvbank.gma.client";
+import { fvBankGmaClient, fvBankDispatcher } from "./fvbank.gma.client";
+import { fetch as undiciFetch } from "undici";
 
 // ── Payload & Response Types ─────────────────────────────────────────────────
 
@@ -98,7 +99,7 @@ async function gmaRequest<T>(
         throw new Error("FV Bank API in simulation mode after auth attempt — skipping live call");
     }
 
-    const res = await fetch(`${baseUrl}${path}`, {
+    const res = await undiciFetch(`${baseUrl}${path}`, {
         method,
         headers: {
             "Content-Type": "application/json",
@@ -106,6 +107,7 @@ async function gmaRequest<T>(
             "Accept": "application/json",
         },
         body: body ? JSON.stringify(body) : undefined,
+        ...(fvBankDispatcher ? { dispatcher: fvBankDispatcher } : {}),
     });
 
     if (!res.ok) {

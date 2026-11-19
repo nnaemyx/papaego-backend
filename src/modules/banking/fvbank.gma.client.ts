@@ -13,6 +13,14 @@
 
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
+import { ProxyAgent, fetch as undiciFetch } from "undici";
+
+// Outbound static IP proxy configuration (Fixie or QuotaGuard)
+const PROXY_URL = process.env.FIXIE_URL || process.env.QUOTAGUARDSTATIC_URL || process.env.HTTP_PROXY;
+export const fvBankDispatcher = PROXY_URL ? new ProxyAgent(PROXY_URL) : undefined;
+if (PROXY_URL) {
+    console.log("🌐 [FV Bank GMA] Outbound proxy configured via:", PROXY_URL.split("@")[1] || "proxy");
+}
 
 export interface GmaConfig {
     baseUrl: string;
@@ -223,12 +231,13 @@ export class FvBankGmaClient {
             });
 
             // Step 2: Exchange JWT for Session Token via GET /auth with x-auth-token header
-            const res = await fetch(`${this.baseUrl}/auth`, {
+            const res = await undiciFetch(`${this.baseUrl}/auth`, {
                 method: "GET",
                 headers: {
                     "x-auth-token": authToken,
                     "Accept": "application/json",
                 },
+                ...(fvBankDispatcher ? { dispatcher: fvBankDispatcher } : {}),
             });
 
             if (!res.ok) {
@@ -298,7 +307,7 @@ export class FvBankGmaClient {
 
             const url = `${this.baseUrl}${path}`;
 
-            const res = await fetch(url, {
+            const res = await undiciFetch(url, {
                 method,
                 headers: {
                     "Content-Type": "application/json",
@@ -306,6 +315,7 @@ export class FvBankGmaClient {
                     "Accept": "application/json",
                 },
                 body: body ? JSON.stringify(body) : undefined,
+                ...(fvBankDispatcher ? { dispatcher: fvBankDispatcher } : {}),
             });
 
             if (!res.ok) {
